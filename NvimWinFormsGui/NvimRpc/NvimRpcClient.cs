@@ -33,7 +33,7 @@ internal sealed class NvimRpcClient : IDisposable
     {
         var psi = new ProcessStartInfo
         {
-            FileName = nvimExe,
+            FileName = ExeResolver.ResolveOnPath(nvimExe),
             Arguments = string.IsNullOrWhiteSpace(extraArgs) ? "--embed" : $"--embed {extraArgs}",
             UseShellExecute = false,
             RedirectStandardInput = true,
