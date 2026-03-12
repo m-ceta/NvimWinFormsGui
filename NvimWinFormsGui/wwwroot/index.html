@@ -1,0 +1,924 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <style>
+        :root {
+            --bg: #000000;
+            --fg: #ffffff;
+        }
+
+        html, body {
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: var(--bg);
+        }
+
+        #root {
+            position: fixed;
+            inset: 0;
+            background: var(--bg);
+        }
+
+        canvas {
+            position: absolute;
+            inset: 0;
+            display: block;
+        }
+
+        #booterr {
+            position: fixed;
+            inset: 0;
+            padding: 12px;
+            font: 14px/1.4 monospace;
+            color: #fff;
+            background: #300;
+            display: none;
+            white-space: pre-wrap;
+        }
+
+        #ime {
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 24px;
+            height: 20px;
+            opacity: 0.01;
+            border: 0;
+            padding: 0;
+            margin: 0;
+            background: transparent;
+            color: transparent;
+            caret-color: transparent;
+            outline: none;
+            resize: none;
+            overflow: hidden;
+            white-space: nowrap;
+            z-index: 10;
+        }
+
+        #ime.composing {
+            opacity: 1;
+            color: var(--fg);
+            caret-color: var(--fg);
+            background: transparent;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"><textarea id="ime" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea><canvas id="cv"></canvas></div>
+    <div id="booterr"></div>
+
+    <script>
+        (() => {
+            const root = document.getElementById("root");
+            const cv = document.getElementById("cv");
+            const errEl = document.getElementById("booterr");
+            const ime = document.getElementById("ime");
+
+            let composing = false;
+            let suppressNextInputText = null;
+            let mouseLeftDown = false;
+            let redrawKickTimer = 0;
+
+            function showErr(msg) {
+                errEl.style.display = "block";
+                errEl.textContent = msg;
+            }
+
+            if (!window.chrome || !window.chrome.webview) {
+                showErr("WebView2 webview bridge が見つかりません。WebView2 の初期化が完了しているか確認してください。");
+                return;
+            }
+
+            const ctx = cv.getContext("2d", { alpha: false });
+            if (!ctx) {
+                showErr("Canvas 2D context が null です。");
+                return;
+            }
+
+            const post = (obj) => window.chrome.webview.postMessage(JSON.stringify(obj));
+
+            // --- font / cell metrics ---
+            let fontFamily = "Consolas, monospace";
+            let fontSize = 14;
+            let lineHeight = 1.2;
+            let cellW = 8, cellH = 16;
+            let dpr = 1;
+            let fontAscent = 11;
+            let fontDescent = 3;
+            let textYOffset = 0;
+
+            function applyGuiFont(value) {
+                if (!value) return;
+
+                let s = String(value);
+
+                // Vim/Neovim の guifont は space が \ か _ で表現されることがある
+                s = s.replace(/\\ /g, " ").replace(/_/g, " ");
+
+                // 例: "AdwaitaMono Nerd Font Mono:h11"
+                const parts = s.split(":");
+                const family = (parts[0] || "").trim();
+                let size = fontSize;
+
+                for (let i = 1; i < parts.length; i++) {
+                    const p = parts[i].trim();
+                    const m = /^h(\d+(?:\.\d+)?)$/i.exec(p);
+                    if (m) {
+                        const parsed = parseFloat(m[1]);
+                        if (!Number.isNaN(parsed) && parsed > 0) size = parsed;
+                    }
+                }
+
+                if (family) {
+                    fontFamily = `"${family}", monospace`;
+                }
+                fontSize = size;
+
+                updateMetrics();
+
+                const cr = calcColsRows();
+                if (cr.cols !== cols || cr.rows !== rows) {
+                    allocGrid(cr.cols, cr.rows);
+                    post({ type: "resize", cols: cr.cols, rows: cr.rows });
+                }
+
+                syncImePosition();
+                markAllDirty();
+                schedulePaint();
+            }
+
+            function updateMetrics() {
+                dpr = window.devicePixelRatio || 1;
+                const w = root.clientWidth;
+                const h = root.clientHeight;
+
+                cv.width = Math.max(1, Math.floor(w * dpr));
+                cv.height = Math.max(1, Math.floor(h * dpr));
+                cv.style.width = w + "px";
+                cv.style.height = h + "px";
+
+                ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+                ctx.font = `${fontSize}px ${fontFamily}`;
+                ctx.textBaseline = "alphabetic";
+
+                const m = ctx.measureText("Mg");
+                cellW = Math.max(4, Math.ceil(ctx.measureText("M").width));
+                cellH = Math.max(8, Math.ceil(fontSize * lineHeight));
+
+                fontAscent = Math.ceil(m.actualBoundingBoxAscent || fontSize * 0.8);
+                fontDescent = Math.ceil(m.actualBoundingBoxDescent || fontSize * 0.2);
+
+                const textH = fontAscent + fontDescent;
+                textYOffset = Math.round((cellH - textH) / 2) + fontAscent + 1;
+            }
+
+            function calcColsRows() {
+                const w = root.clientWidth;
+                const h = root.clientHeight;
+                const cols = Math.max(10, Math.floor(w / cellW));
+                const rows = Math.max(5, Math.floor(h / cellH));
+                return { cols, rows };
+            }
+
+            // --- highlight state ---
+            const hl = new Map(); // id -> {fg,bg}
+            let defFg = "#ffffff";
+            let defBg = "#000000";
+
+            function rgbIntToHex(n) {
+                if (typeof n !== "number") return null;
+                if (n < 0) return null;
+                const s = (n >>> 0).toString(16).padStart(6, "0");
+                return "#" + s;
+            }
+
+            // --- grid state (grid=1 only) ---
+            let cols = 80, rows = 24;
+            let grid = [];
+            let cursor = { r: 0, c: 0 };
+            let modeInfos = [];
+            let currentModeName = "normal";
+            let currentCursorShape = "block"; // block | vertical | horizontal
+            let currentCellPercentage = 25;   // ver25 / hor20 など
+            let gotAnyRedraw = false;
+            let dirtyRows = null;
+
+            function markDirtyRow(r) {
+                if (!dirtyRows) return;
+                if (r >= 0 && r < dirtyRows.length) dirtyRows[r] = 1;
+            }
+
+            function markAllDirty() {
+                if (!dirtyRows) return;
+                dirtyRows.fill(1);
+            }
+
+            function allocGrid(newCols, newRows) {
+                cols = newCols;
+                rows = newRows;
+                grid = new Array(rows);
+                dirtyRows = new Uint8Array(rows);
+                dirtyRows.fill(1);
+
+                for (let r = 0; r < rows; r++) {
+                    const row = new Array(cols);
+                    for (let c = 0; c < cols; c++) row[c] = { ch: " ", hl: 0 };
+                    grid[r] = row;
+                }
+            }
+
+            function clearGrid() {
+                for (let r = 0; r < rows; r++) {
+                    for (let c = 0; c < cols; c++) {
+                        grid[r][c].ch = " ";
+                        grid[r][c].hl = 0;
+                    }
+                }
+                markAllDirty();
+            }
+
+            // --- rendering ---
+            let paintPending = false;
+
+            function schedulePaint() {
+                if (paintPending) return;
+                paintPending = true;
+                requestAnimationFrame(() => {
+                    paintPending = false;
+                    paint();
+                });
+            }
+
+            function getColors(hlId) {
+                const a = hl.get(hlId);
+
+                let fg = (a && a.fg) ? a.fg : defFg;
+                let bg = (a && a.bg) ? a.bg : defBg;
+
+                if (a && a.reverse) {
+                    const tmp = fg;
+                    fg = bg;
+                    bg = tmp;
+                }
+
+                return { fg, bg };
+            }
+
+            function paint() {
+                const w = root.clientWidth;
+                const h = root.clientHeight;
+
+                ctx.font = `${fontSize}px ${fontFamily}`;
+                ctx.textBaseline = "alphabetic";
+                ctx.direction = "ltr";
+
+                ctx.fillStyle = defBg;
+                ctx.fillRect(0, 0, w, h);
+
+                for (let r = 0; r < rows; r++) {
+                    const y = r * cellH;
+                    if (y >= h) continue;
+
+                    for (let c = 0; c < cols; c++) {
+                        const x = c * cellW;
+                        if (x >= w) break;
+
+                        const cell = grid[r][c];
+                        const { fg, bg } = getColors(cell.hl);
+                        const ch = cell.ch || " ";
+
+                        let span = 1;
+
+                        // タブ行(row 0)は常に1セルずつ描画する。
+                        // ここで width 推定に基づく span を使うと、Nerd Font アイコンや
+                        // タブ装飾文字で後続セルを飛ばしてしまい、表示欠けの原因になる。
+                        if (r !== 0 && ch !== " ") {
+                            span = Math.min(cols - c, cellSpanForChar(ch));
+                        }
+
+                        ctx.fillStyle = bg || defBg;
+                        ctx.fillRect(x, y, cellW * span, cellH);
+
+                        if (ch !== " ") {
+                            ctx.fillStyle = fg || defFg;
+                            ctx.fillText(ch, x, y + textYOffset);
+                        }
+
+                        if (r !== 0 && span > 1) {
+                            c += (span - 1);
+                        }
+                    }
+                }
+
+                const cx = cursor.c * cellW;
+                const cy = cursor.r * cellH;
+                if (cx < w && cy < h && cursor.r >= 0 && cursor.r < rows && cursor.c >= 0 && cursor.c < cols) {
+                    const cell = grid[cursor.r][cursor.c] || { ch: " ", hl: 0 };
+                    const { fg, bg } = getColors(cell.hl);
+                    const ch = cell.ch || " ";
+
+                    let span = 1;
+                    if (cursor.r !== 0 && ch !== " ") {
+                        span = Math.min(cols - cursor.c, cellSpanForChar(ch));
+                    }
+
+                    if (currentCursorShape === "vertical") {
+                        const cw = Math.max(1, Math.round((cellW * currentCellPercentage) / 100));
+                        ctx.fillStyle = fg || defFg;
+                        ctx.fillRect(cx, cy, cw, cellH);
+
+                        if (ch !== " ") {
+                            ctx.fillStyle = fg || defFg;
+                            ctx.fillText(ch, cx, cy + textYOffset);
+                        }
+                    } else if (currentCursorShape === "horizontal") {
+                        const chh = Math.max(1, Math.round((cellH * currentCellPercentage) / 100));
+                        ctx.fillStyle = fg || defFg;
+                        ctx.fillRect(cx, cy + (cellH - chh), cellW * span, chh);
+
+                        if (ch !== " ") {
+                            ctx.fillStyle = fg || defFg;
+                            ctx.fillText(ch, cx, cy + textYOffset);
+                        }
+                    } else {
+                        ctx.fillStyle = fg || defFg;
+                        ctx.fillRect(cx, cy, cellW * span, cellH);
+
+                        if (ch !== " ") {
+                            ctx.fillStyle = bg || defBg;
+                            ctx.fillText(ch, cx, cy + textYOffset);
+                        }
+                    }
+                }
+
+                syncImePosition();
+
+                if (!gotAnyRedraw) {
+                    ctx.fillStyle = "rgba(255,255,255,0.7)";
+                    ctx.fillText("Waiting for Neovim redraw…", 8, 8 + textYOffset);
+                }
+            }
+
+            function cellSpanForChar(ch) {
+                if (!ch || ch === " ") return 1;
+                const w = ctx.measureText(ch).width;
+                return (w > cellW * 1.35) ? 2 : 1;
+            }
+
+            function syncImePosition() {
+                const x = Math.max(0, Math.min(root.clientWidth - cellW, cursor.c * cellW));
+                const y = Math.max(0, Math.min(root.clientHeight - cellH, cursor.r * cellH));
+
+                const composingText = ime.value || "";
+                const measured = composingText ? ctx.measureText(composingText).width : 0;
+                const desiredWidth = Math.max(
+                    cellW * 2,
+                    Math.ceil(measured) + cellW * 2,
+                    24
+                );
+
+                const maxWidth = Math.max(24, root.clientWidth - x - 4);
+                const actualWidth = Math.min(desiredWidth, maxWidth);
+
+                ime.style.left = `${x}px`;
+                ime.style.top = `${y}px`;
+                ime.style.width = `${actualWidth}px`;
+                ime.style.height = `${cellH}px`;
+                ime.style.font = `${fontSize}px ${fontFamily}`;
+                ime.style.lineHeight = `${cellH}px`;
+            }
+
+            function setImeComposingVisual(active) {
+                if (active) {
+                    ime.classList.add("composing");
+                } else {
+                    ime.classList.remove("composing");
+                }
+            }
+
+            function applyModeCursor(modeName) {
+                currentModeName = modeName || currentModeName;
+
+                const info = modeInfos.find(m => m && m.name === currentModeName);
+                if (!info) {
+                    currentCursorShape = "block";
+                    currentCellPercentage = 25;
+                    return;
+                }
+
+                currentCursorShape = info.cursor_shape || "block";
+                currentCellPercentage = (typeof info.cell_percentage === "number")
+                    ? info.cell_percentage
+                    : (currentCursorShape === "block" ? 100 : 25);
+            }
+
+            function getModifierString(e) {
+                const mods = [];
+                if (e.shiftKey) mods.push("S");
+                if (e.ctrlKey) mods.push("C");
+                if (e.altKey) mods.push("A");
+                return mods.join("-");
+            }
+
+            function eventToGridPos(e) {
+                const rect = cv.getBoundingClientRect();
+                const x = Math.max(0, e.clientX - rect.left);
+                const y = Math.max(0, e.clientY - rect.top);
+
+                const col = Math.max(0, Math.min(cols - 1, Math.floor(x / cellW)));
+                const row = Math.max(0, Math.min(rows - 1, Math.floor(y / cellH)));
+
+                return { grid: 0, row, col };
+            }
+
+            function postMouse(button, action, e) {
+                const pos = eventToGridPos(e);
+                post({
+                    type: "mouse",
+                    button,
+                    action,
+                    modifiers: getModifierString(e),
+                    grid: pos.grid,
+                    row: pos.row,
+                    col: pos.col
+                });
+            }
+
+            function scheduleNvimRedraw() {
+                if (redrawKickTimer) return;
+
+                redrawKickTimer = window.setTimeout(() => {
+                    redrawKickTimer = 0;
+                    post({ type: "command", data: "redraw!" });
+                }, 80);
+            }
+
+            function normalizeArg(a) {
+                return Array.isArray(a) ? a : [a];
+            }
+
+            function applyRedraw(events) {
+                gotAnyRedraw = true;
+
+                for (const upd of events) {
+                    if (!Array.isArray(upd) || upd.length === 0) continue;
+                    const name = upd[0];
+                    const args = upd.slice(1);
+
+                    switch (name) {
+                        case "default_colors_set": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const fg = rgbIntToHex(a[0]);
+                                const bg = rgbIntToHex(a[1]);
+
+                                if (fg) defFg = fg;
+                                if (bg) defBg = bg;
+                            }
+
+                            document.documentElement.style.setProperty("--bg", defBg);
+                            document.documentElement.style.setProperty("--fg", defFg);
+                            root.style.backgroundColor = defBg;
+                            post({ type: "colors", bg: defBg, fg: defFg });
+
+                            markAllDirty();
+                            ctx.fillStyle = defBg;
+                            ctx.fillRect(0, 0, root.clientWidth, root.clientHeight);
+                            break;
+                        }
+
+                        case "hl_attr_define": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const id = a[0];
+                                const rgbAttrs = a[1] || {};
+
+                                const fg = rgbIntToHex(rgbAttrs.foreground);
+                                const bg = rgbIntToHex(rgbAttrs.background);
+                                const reverse = !!rgbAttrs.reverse;
+
+                                hl.set(id, { fg, bg, reverse });
+                            }
+                            break;
+                        }
+
+                        case "grid_resize": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                if (a.length < 3) continue;
+                                if (a[0] !== 1) continue;
+                                allocGrid(a[1], a[2]);
+                            }
+                            break;
+                        }
+
+                        case "grid_clear": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                if (a[0] === 1) clearGrid();
+                            }
+                            break;
+                        }
+
+                        case "grid_cursor_goto": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                if (a.length < 3) continue;
+                                if (a[0] !== 1) continue;
+                                const oldR = cursor.r;
+                                cursor.r = a[1];
+                                cursor.c = a[2];
+                                markDirtyRow(oldR);
+                                markDirtyRow(cursor.r);
+                                syncImePosition();
+                            }
+                            break;
+                        }
+
+                        case "grid_scroll": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                if (a.length < 7) continue;
+                                if (a[0] !== 1) continue;
+
+                                const top = a[1];
+                                const bot = a[2];
+                                const left = a[3];
+                                const right = a[4];
+                                const rowsDelta = a[5];
+                                const colsDelta = a[6];
+                                const delta = rowsDelta;
+
+                                if (colsDelta !== 0) {
+                                    markAllDirty();
+                                    continue;
+                                }
+                                if (delta === 0) continue;
+
+                                if (delta > 0) {
+                                    for (let r = top; r < bot - delta; r++) {
+                                        for (let c = left; c < right; c++) {
+                                            const src = grid[r + delta][c];
+                                            grid[r][c] = { ch: src.ch, hl: src.hl };
+                                        }
+                                    }
+                                    for (let r = bot - delta; r < bot; r++) {
+                                        for (let c = left; c < right; c++) {
+                                            grid[r][c] = { ch: " ", hl: 0 };
+                                        }
+                                    }
+                                } else {
+                                    const d = -delta;
+                                    for (let r = bot - 1; r >= top + d; r--) {
+                                        for (let c = left; c < right; c++) {
+                                            const src = grid[r - d][c];
+                                            grid[r][c] = { ch: src.ch, hl: src.hl };
+                                        }
+                                    }
+                                    for (let r = top; r < top + d; r++) {
+                                        for (let c = left; c < right; c++) {
+                                            grid[r][c] = { ch: " ", hl: 0 };
+                                        }
+                                    }
+                                }
+
+                                markAllDirty();
+                            }
+                            break;
+                        }
+
+                        case "grid_line": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                if (a.length < 4) continue;
+                                if (a[0] !== 1) continue;
+
+                                const row = a[1];
+                                const colStart = a[2];
+                                markDirtyRow(row);
+
+                                const cells = a[3];
+                                if (!Array.isArray(cells)) continue;
+                                if (row < 0 || row >= rows) continue;
+
+                                let col = colStart;
+                                let lastHl = (colStart > 0 && colStart - 1 < cols) ? grid[row][colStart - 1].hl : 0;
+
+                                for (const cell of cells) {
+                                    if (!Array.isArray(cell) || cell.length < 1) continue;
+
+                                    const text = (cell[0] ?? "");
+                                    const hlId = (cell.length >= 2 && cell[1] != null) ? cell[1] : lastHl;
+                                    const repeat = (cell.length >= 3 && cell[2] != null) ? cell[2] : 1;
+
+                                    lastHl = hlId;
+                                    const chars = [...String(text)];
+
+                                    for (let rep = 0; rep < repeat; rep++) {
+                                        if (chars.length === 0) {
+                                            if (col >= 0 && col < cols) {
+                                                grid[row][col].ch = " ";
+                                                grid[row][col].hl = hlId;
+                                            }
+                                            col++;
+                                        } else {
+                                            for (let i = 0; i < chars.length; i++) {
+                                                if (col >= 0 && col < cols) {
+                                                    grid[row][col].ch = chars[i];
+                                                    grid[row][col].hl = hlId;
+                                                }
+                                                col++;
+                                            }
+                                        }
+                                    }
+                                }
+
+                            }
+                            break;
+                        }
+
+                        case "set_title": {
+                            const t = String(args[0] ?? "Nvim");
+                            post({ type: "title", title: t });
+                            break;
+                        }
+
+                        case "mode_info_set": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const enabled = !!a[0];
+                                const infos = Array.isArray(a[1]) ? a[1] : [];
+                                if (enabled) {
+                                    modeInfos = infos;
+                                    applyModeCursor(currentModeName);
+                                }
+                            }
+                            break;
+                        }
+
+                        case "option_set": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const optName = String(a[0] ?? "");
+                                const optValue = a[1];
+
+                                if (optName === "guifont") {
+                                    applyGuiFont(optValue);
+                                }
+                            }
+                            break;
+                        }
+
+                        case "mode_change": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const modeName = String(a[0] ?? currentModeName);
+                                currentModeName = modeName;
+                                applyModeCursor(modeName);
+                            }
+                            break;
+                        }
+
+                        default:
+                            break;
+                    }
+                }
+
+                markAllDirty();
+                schedulePaint();
+            }
+
+            // --- input ---
+            const SPECIAL = new Map([
+                ["Enter", "<CR>"],
+                ["Backspace", "<BS>"],
+                ["Tab", "<Tab>"],
+                ["Escape", "<Esc>"],
+                ["ArrowLeft", "<Left>"],
+                ["ArrowRight", "<Right>"],
+                ["ArrowUp", "<Up>"],
+                ["ArrowDown", "<Down>"],
+                ["Home", "<Home>"],
+                ["End", "<End>"],
+                ["PageUp", "<PageUp>"],
+                ["PageDown", "<PageDown>"],
+                ["Delete", "<Del>"],
+                ["Insert", "<Insert>"]
+            ]);
+
+            function keyToVim(e) {
+                if (e.key.startsWith("F") && /^\d+$/.test(e.key.substring(1))) return `<${e.key}>`;
+
+                if (SPECIAL.has(e.key)) {
+                    if (e.key === "Tab" && e.shiftKey) return "<S-Tab>";
+                    return SPECIAL.get(e.key);
+                }
+
+                if (e.ctrlKey && !e.altKey && e.key.length === 1) return `<C-${e.key.toLowerCase()}>`;
+                if (e.altKey && !e.ctrlKey && e.key.length === 1) return `<M-${e.key.toLowerCase()}>`;
+                if (!e.ctrlKey && !e.altKey && e.key.length === 1) return e.key;
+
+                return null;
+            }
+
+            // クリックでIME用textareaにフォーカス
+            root.addEventListener("pointerdown", (e) => {
+                post({ type: "editorPointerDown" });
+
+                if (e.button === 0) {
+                    mouseLeftDown = true;
+                    postMouse("left", "press", e);
+                } else if (e.button === 1) {
+                    postMouse("middle", "press", e);
+                } else if (e.button === 2) {
+                    postMouse("right", "press", e);
+                }
+
+                setTimeout(() => {
+                    syncImePosition();
+                    ime.focus();
+                }, 0);
+
+                setTimeout(() => {
+                    syncImePosition();
+                    ime.focus();
+                }, 150);
+
+                e.preventDefault();
+            }, { passive: false });
+
+            root.addEventListener("pointerup", (e) => {
+                if (e.button === 0) {
+                    mouseLeftDown = false;
+                    postMouse("left", "release", e);
+                } else if (e.button === 1) {
+                    postMouse("middle", "release", e);
+                } else if (e.button === 2) {
+                    postMouse("right", "release", e);
+                }
+
+                scheduleNvimRedraw();
+                e.preventDefault();
+            }, { passive: false });
+
+            root.addEventListener("pointermove", (e) => {
+                if (!mouseLeftDown) return;
+                postMouse("left", "drag", e);
+                scheduleNvimRedraw();
+                e.preventDefault();
+            }, { passive: false });
+
+            root.addEventListener("pointercancel", (e) => {
+                if (!mouseLeftDown) return;
+                mouseLeftDown = false;
+                postMouse("left", "release", e);
+                scheduleNvimRedraw();
+            }, { passive: true });
+
+            ime.addEventListener("compositionstart", () => {
+                composing = true;
+                suppressNextInputText = null;
+                setImeComposingVisual(true);
+                syncImePosition();
+            });
+
+            ime.addEventListener("compositionupdate", () => {
+                setImeComposingVisual(true);
+                syncImePosition();
+            });
+
+            ime.addEventListener("compositionend", (e) => {
+                composing = false;
+                setImeComposingVisual(false);
+
+                const text = (e.data ?? ime.value ?? "");
+                if (text) {
+                    suppressNextInputText = text;
+                    post({ type: "input", data: text, termcode: false });
+                }
+
+                ime.value = "";
+                syncImePosition();
+            });
+
+            ime.addEventListener("input", () => {
+                if (composing) return;
+
+                const v = ime.value || "";
+                if (!v) {
+                    ime.value = "";
+                    syncImePosition();
+                    return;
+                }
+
+                if (suppressNextInputText !== null && v === suppressNextInputText) {
+                    suppressNextInputText = null;
+                    ime.value = "";
+                    syncImePosition();
+                    return;
+                }
+
+                suppressNextInputText = null;
+                post({ type: "input", data: v, termcode: false });
+                ime.value = "";
+                syncImePosition();
+            });
+
+            ime.addEventListener("keydown", (e) => {
+                if (composing || e.isComposing) return;
+
+                const k = keyToVim(e);
+                if (!k) return;
+
+                e.preventDefault();
+                e.stopPropagation();
+                post({ type: "input", data: k, termcode: k.startsWith("<") });
+            }, { passive: false });
+
+            root.addEventListener("wheel", (e) => {
+                e.preventDefault();
+
+                if (Math.abs(e.deltaY) >= Math.abs(e.deltaX)) {
+                    postMouse("wheel", e.deltaY < 0 ? "up" : "down", e);
+                } else {
+                    postMouse("wheel", e.deltaX < 0 ? "left" : "right", e);
+                }
+
+                scheduleNvimRedraw();
+            }, { passive: false });
+
+            root.addEventListener("contextmenu", (e) => {
+                e.preventDefault();
+            }, { passive: false });
+
+            function onResize() {
+                updateMetrics();
+                const cr = calcColsRows();
+                if (cr.cols !== cols || cr.rows !== rows) {
+                    allocGrid(cr.cols, cr.rows);
+                    post({ type: "resize", cols: cr.cols, rows: cr.rows });
+                }
+                schedulePaint();
+            }
+
+            // start
+            updateMetrics();
+            const cr = calcColsRows();
+            allocGrid(cr.cols, cr.rows);
+            schedulePaint();
+            post({ type: "ready", cols: cr.cols, rows: cr.rows });
+            setTimeout(() => {
+                syncImePosition();
+                ime.focus();
+            }, 0);
+
+            try {
+                new ResizeObserver(onResize).observe(root);
+            } catch {
+                window.addEventListener("resize", onResize);
+            }
+
+            window.chrome.webview.addEventListener("message", (ev) => {
+                let msg;
+                try {
+                    msg = JSON.parse(ev.data);
+                } catch {
+                    return;
+                }
+
+                if (msg.type === "bootError" && msg.message) {
+                    showErr(String(msg.message));
+                    return;
+                }
+
+                if (msg.type === "redrawBatch" && Array.isArray(msg.batches)) {
+                    try {
+                        const merged = [];
+                        for (const evs of msg.batches) {
+                            if (Array.isArray(evs)) {
+                                for (const ev of evs) merged.push(ev);
+                            }
+                        }
+                        applyRedraw(merged);
+                    } catch (e) {
+                        showErr("applyRedraw failed: " + e + "\n" + (e && e.stack ? e.stack : ""));
+                    }
+                    return;
+                }
+
+                if (msg.type === "redraw" && msg.events) {
+                    try {
+                        applyRedraw(msg.events);
+                    } catch (e) {
+                        showErr("applyRedraw failed: " + e + "\n" + (e && e.stack ? e.stack : ""));
+                    }
+                }
+            });
+        })();
+    </script>
+</body>
+</html>
