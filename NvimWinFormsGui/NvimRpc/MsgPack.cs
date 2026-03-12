@@ -71,15 +71,15 @@ internal static class MsgPack
             case byte[] bin:
                 WriteBin(s, bin);
                 return;
-case object?[] arr2:
-    WriteArrayHeader(s, arr2.Length);
-    for (int i = 0; i < arr2.Length; i++) PackTo(s, arr2[i]);
-    return;
+            case object?[] arr2:
+                WriteArrayHeader(s, arr2.Length);
+                for (int i = 0; i < arr2.Length; i++) PackTo(s, arr2[i]);
+                return;
 
-case IList<object?> arr:
-    WriteArrayHeader(s, arr.Count);
-    for (int i = 0; i < arr.Count; i++) PackTo(s, arr[i]);
-    return;
+            case IList<object?> arr:
+                WriteArrayHeader(s, arr.Count);
+                for (int i = 0; i < arr.Count; i++) PackTo(s, arr[i]);
+                return;
 
 
             case Dictionary<string, object?> mapStr:

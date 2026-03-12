@@ -169,60 +169,60 @@ internal sealed class NvimRpcClient : IDisposable
     }
 
     private static string? DecodeString(object? v)
-{
-    if (v is null) return null;
-    if (v is string s) return s;
-    if (v is byte[] b)
     {
-        try { return Encoding.UTF8.GetString(b); }
-        catch { return Convert.ToBase64String(b); }
-    }
-    return v.ToString();
-}
-
-public static object? ToJsonable(object? v)
-{
-    if (v is null) return null;
-
-    if (v is string or bool) return v;
-
-    // Neovim often encodes "String" as msgpack bin => byte[]
-    if (v is byte[] bytes)
-    {
-        try { return Encoding.UTF8.GetString(bytes); }
-        catch { return Convert.ToBase64String(bytes); }
-    }
-
-    if (v is MsgPack.Ext ext) return new Dictionary<string, object?>
-    {
-        ["$extType"] = ext.Type,
-        ["$extData"] = Convert.ToBase64String(ext.Data)
-    };
-
-    if (TryToLong(v, out long l)) return l;
-
-    if (v is List<object?> list)
-    {
-        var outList = new List<object?>(list.Count);
-        foreach (var x in list) outList.Add(ToJsonable(x));
-        return outList;
-    }
-
-    if (v is Dictionary<object, object?> map)
-    {
-        var outMap = new Dictionary<string, object?>(StringComparer.Ordinal);
-        foreach (var kv in map)
+        if (v is null) return null;
+        if (v is string s) return s;
+        if (v is byte[] b)
         {
-            var k = DecodeString(kv.Key) ?? "";
-            outMap[k] = ToJsonable(kv.Value);
+            try { return Encoding.UTF8.GetString(b); }
+            catch { return Convert.ToBase64String(b); }
         }
-        return outMap;
+        return v.ToString();
     }
 
-    return v.ToString();
-}
+    public static object? ToJsonable(object? v)
+    {
+        if (v is null) return null;
 
-private static bool TryToInt(object? v, out int i)
+        if (v is string or bool) return v;
+
+        // Neovim often encodes "String" as msgpack bin => byte[]
+        if (v is byte[] bytes)
+        {
+            try { return Encoding.UTF8.GetString(bytes); }
+            catch { return Convert.ToBase64String(bytes); }
+        }
+
+        if (v is MsgPack.Ext ext) return new Dictionary<string, object?>
+        {
+            ["$extType"] = ext.Type,
+            ["$extData"] = Convert.ToBase64String(ext.Data)
+        };
+
+        if (TryToLong(v, out long l)) return l;
+
+        if (v is List<object?> list)
+        {
+            var outList = new List<object?>(list.Count);
+            foreach (var x in list) outList.Add(ToJsonable(x));
+            return outList;
+        }
+
+        if (v is Dictionary<object, object?> map)
+        {
+            var outMap = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach (var kv in map)
+            {
+                var k = DecodeString(kv.Key) ?? "";
+                outMap[k] = ToJsonable(kv.Value);
+            }
+            return outMap;
+        }
+
+        return v.ToString();
+    }
+
+    private static bool TryToInt(object? v, out int i)
     {
         i = 0;
         if (v is long l) { i = (int)l; return true; }
