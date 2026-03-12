@@ -226,7 +226,9 @@
 
                 for (let r = 0; r < rows; r++) {
                     const row = new Array(cols);
-                    for (let c = 0; c < cols; c++) row[c] = { ch: " ", hl: 0 };
+                    for (let c = 0; c < cols; c++) {
+                        row[c] = { ch: " ", hl: 0, cont: false };
+                    }
                     grid[r] = row;
                 }
             }
@@ -236,6 +238,7 @@
                     for (let c = 0; c < cols; c++) {
                         grid[r][c].ch = " ";
                         grid[r][c].hl = 0;
+                        grid[r][c].cont = false;
                     }
                 }
                 markAllDirty();
@@ -283,48 +286,51 @@
                     const y = r * cellH;
                     if (y >= h) continue;
 
+                    // 背景を先に1セルずつ塗る
                     for (let c = 0; c < cols; c++) {
                         const x = c * cellW;
                         if (x >= w) break;
 
                         const cell = grid[r][c];
-                        const { fg, bg } = getColors(cell.hl);
-                        const ch = cell.ch || " ";
-
-                        let span = 1;
-
-                        // タブ行(row 0)は常に1セルずつ描画する。
-                        // ここで width 推定に基づく span を使うと、Nerd Font アイコンや
-                        // タブ装飾文字で後続セルを飛ばしてしまい、表示欠けの原因になる。
-                        if (r !== 0 && ch !== " ") {
-                            span = Math.min(cols - c, cellSpanForChar(ch));
-                        }
+                        const { bg } = getColors(cell.hl);
 
                         ctx.fillStyle = bg || defBg;
-                        ctx.fillRect(x, y, cellW * span, cellH);
+                        ctx.fillRect(x, y, cellW, cellH);
+                    }
 
-                        if (ch !== " ") {
-                            ctx.fillStyle = fg || defFg;
-                            ctx.fillText(ch, x, y + textYOffset);
-                        }
+                    // 文字は右→左へ描く
+                    // こうすると wide 文字の右半分が次セル背景で消されにくい
+                    for (let c = cols - 1; c >= 0; c--) {
+                        const x = c * cellW;
+                        if (x >= w) continue;
 
-                        if (r !== 0 && span > 1) {
-                            c += (span - 1);
-                        }
+                        const cell = grid[r][c];
+                        const { fg } = getColors(cell.hl);
+                        const ch = cell.ch || "";
+
+                        if (!ch || ch === " ") continue;
+
+                        ctx.fillStyle = fg || defFg;
+                        ctx.fillText(ch, x, y + textYOffset);
                     }
                 }
 
                 const cx = cursor.c * cellW;
                 const cy = cursor.r * cellH;
                 if (cx < w && cy < h && cursor.r >= 0 && cursor.r < rows && cursor.c >= 0 && cursor.c < cols) {
-                    const cell = grid[cursor.r][cursor.c] || { ch: " ", hl: 0 };
+                    const cell = grid[cursor.r][cursor.c] || { ch: " ", hl: 0, cont: false };
                     const { fg, bg } = getColors(cell.hl);
                     const ch = cell.ch || " ";
 
-                    let span = 1;
-                    if (cursor.r !== 0 && ch !== " ") {
-                        span = Math.min(cols - cursor.c, cellSpanForChar(ch));
+                    let cursorW = cellW;
+                    if (ch && ch !== " ") {
+                        const measuredW = ctx.measureText(ch).width;
+
+                        // 半角は最低1セル、全角など広い文字は実測幅ベース
+                        // 少しだけ余裕を持たせつつ、2セルを超えないようにする
+                        cursorW = Math.max(cellW, Math.min(Math.ceil(measuredW), cellW * 2));
                     }
+                    cursorW = Math.min(cursorW, w - cx);
 
                     if (currentCursorShape === "vertical") {
                         const cw = Math.max(1, Math.round((cellW * currentCellPercentage) / 100));
@@ -338,15 +344,16 @@
                     } else if (currentCursorShape === "horizontal") {
                         const chh = Math.max(1, Math.round((cellH * currentCellPercentage) / 100));
                         ctx.fillStyle = fg || defFg;
-                        ctx.fillRect(cx, cy + (cellH - chh), cellW * span, chh);
+                        ctx.fillRect(cx, cy + (cellH - chh), cursorW, chh);
 
                         if (ch !== " ") {
                             ctx.fillStyle = fg || defFg;
                             ctx.fillText(ch, cx, cy + textYOffset);
                         }
                     } else {
+                        // block cursor
                         ctx.fillStyle = fg || defFg;
-                        ctx.fillRect(cx, cy, cellW * span, cellH);
+                        ctx.fillRect(cx, cy, cursorW, cellH);
 
                         if (ch !== " ") {
                             ctx.fillStyle = bg || defBg;
@@ -563,12 +570,12 @@
                                     for (let r = top; r < bot - delta; r++) {
                                         for (let c = left; c < right; c++) {
                                             const src = grid[r + delta][c];
-                                            grid[r][c] = { ch: src.ch, hl: src.hl };
+                                            grid[r][c] = { ch: src.ch, hl: src.hl, cont: !!src.cont };
                                         }
                                     }
                                     for (let r = bot - delta; r < bot; r++) {
                                         for (let c = left; c < right; c++) {
-                                            grid[r][c] = { ch: " ", hl: 0 };
+                                            grid[r][c] = { ch: " ", hl: 0, cont: false };
                                         }
                                     }
                                 } else {
@@ -576,12 +583,12 @@
                                     for (let r = bot - 1; r >= top + d; r--) {
                                         for (let c = left; c < right; c++) {
                                             const src = grid[r - d][c];
-                                            grid[r][c] = { ch: src.ch, hl: src.hl };
+                                            grid[r][c] = { ch: src.ch, hl: src.hl, cont: !!src.cont };
                                         }
                                     }
                                     for (let r = top; r < top + d; r++) {
                                         for (let c = left; c < right; c++) {
-                                            grid[r][c] = { ch: " ", hl: 0 };
+                                            grid[r][c] = { ch: " ", hl: 0, cont: false };
                                         }
                                     }
                                 }
@@ -611,32 +618,34 @@
                                 for (const cell of cells) {
                                     if (!Array.isArray(cell) || cell.length < 1) continue;
 
-                                    const text = (cell[0] ?? "");
+                                    const text = String(cell[0] ?? "");
                                     const hlId = (cell.length >= 2 && cell[1] != null) ? cell[1] : lastHl;
                                     const repeat = (cell.length >= 3 && cell[2] != null) ? cell[2] : 1;
 
                                     lastHl = hlId;
-                                    const chars = [...String(text)];
+                                    const chars = [...text];
 
                                     for (let rep = 0; rep < repeat; rep++) {
                                         if (chars.length === 0) {
                                             if (col >= 0 && col < cols) {
                                                 grid[row][col].ch = " ";
                                                 grid[row][col].hl = hlId;
+                                                grid[row][col].cont = false;
                                             }
                                             col++;
-                                        } else {
-                                            for (let i = 0; i < chars.length; i++) {
-                                                if (col >= 0 && col < cols) {
-                                                    grid[row][col].ch = chars[i];
-                                                    grid[row][col].hl = hlId;
-                                                }
-                                                col++;
+                                            continue;
+                                        }
+
+                                        for (let i = 0; i < chars.length; i++) {
+                                            if (col >= 0 && col < cols) {
+                                                grid[row][col].ch = chars[i];
+                                                grid[row][col].hl = hlId;
+                                                grid[row][col].cont = false;
                                             }
+                                            col++;
                                         }
                                     }
                                 }
-
                             }
                             break;
                         }
