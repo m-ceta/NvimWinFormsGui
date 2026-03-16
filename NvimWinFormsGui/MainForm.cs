@@ -378,6 +378,10 @@ public sealed class MainForm : Form
             case "editorPointerDown":
                 CloseAllMenuDropDowns();
                 return;
+
+            case "imeOff":
+                ForceImeOff();
+                return;
         }
     }
 
@@ -843,6 +847,67 @@ public sealed class MainForm : Form
         foreach (ToolStripItem item in _menu.Items)
             if (item is ToolStripMenuItem mi) mi.HideDropDown();
         _menu.Invalidate();
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetFocus();
+
+    [DllImport("imm32.dll")]
+    private static extern IntPtr ImmGetContext(IntPtr hWnd);
+
+    [DllImport("imm32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ImmReleaseContext(IntPtr hWnd, IntPtr hIMC);
+
+    [DllImport("imm32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool ImmSetOpenStatus(IntPtr hIMC, bool fOpen);
+
+    [DllImport("imm32.dll")]
+    private static extern IntPtr ImmGetDefaultIMEWnd(IntPtr hWnd);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    private const uint WM_IME_CONTROL = 0x0283;
+    private const int IMC_SETOPENSTATUS = 0x0006;
+
+    private void ForceImeOff()
+    {
+        try
+        {
+            IntPtr hwnd = GetFocus();
+            if (hwnd == IntPtr.Zero)
+                hwnd = _web.Handle;
+
+            if (hwnd == IntPtr.Zero)
+                return;
+
+            // まず通常の IMM コンテキスト取得を試す
+            var hImc = ImmGetContext(hwnd);
+            if (hImc != IntPtr.Zero)
+            {
+                try
+                {
+                    ImmSetOpenStatus(hImc, false);
+                    return;
+                }
+                finally
+                {
+                    ImmReleaseContext(hwnd, hImc);
+                }
+            }
+
+            // IMM コンテキストが取れない場合は、既定 IME ウィンドウに対して OPENSTATUS を閉じる
+            var imeWnd = ImmGetDefaultIMEWnd(hwnd);
+            if (imeWnd != IntPtr.Zero)
+            {
+                SendMessage(imeWnd, WM_IME_CONTROL, (IntPtr)IMC_SETOPENSTATUS, IntPtr.Zero);
+            }
+        }
+        catch
+        {
+        }
     }
 
     // =========================================================

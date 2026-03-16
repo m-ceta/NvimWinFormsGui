@@ -423,6 +423,24 @@
                     : (currentCursorShape === "block" ? 100 : 25);
             }
 
+            function isNormalLikeMode(modeName) {
+                const m = String(modeName || "").toLowerCase();
+
+                // normal / normal busy / cmdline normal などを広めに拾う
+                return m === "normal"
+                    || m === "normal_busy"
+                    || m === "normal_busy_operator_pending"
+                    || m === "normal_operator_pending"
+                    || m === "command"
+                    || m === "cmdline_normal";
+            }
+
+            function notifyImeOffIfNeeded(modeName) {
+                if (isNormalLikeMode(modeName)) {
+                    post({ type: "imeOff" });
+                }
+            }
+
             function getModifierString(e) {
                 const mods = [];
                 if (e.shiftKey) mods.push("S");
@@ -664,6 +682,7 @@
                                 if (enabled) {
                                     modeInfos = infos;
                                     applyModeCursor(currentModeName);
+                                    notifyImeOffIfNeeded(currentModeName);
                                 }
                             }
                             break;
@@ -688,6 +707,7 @@
                                 const modeName = String(a[0] ?? currentModeName);
                                 currentModeName = modeName;
                                 applyModeCursor(modeName);
+                                notifyImeOffIfNeeded(modeName);
                             }
                             break;
                         }
