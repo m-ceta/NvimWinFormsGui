@@ -743,8 +743,7 @@ public sealed class MainForm : Form
 
         string cmd = mode switch
         {
-            //OpenMode.NewTab => "confirm tabedit",
-            OpenMode.NewTab => "confirm tab drop",
+            OpenMode.NewTab => "confirm tabedit",
             OpenMode.Current => "confirm edit",
             OpenMode.VSplit => "confirm vsplit",
             OpenMode.Split => "confirm split",
@@ -752,6 +751,23 @@ public sealed class MainForm : Form
         };
 
         _ = SafeCommandAsync($"lua vim.cmd('{cmd} ' .. vim.fn.fnameescape({pathLit}))");
+
+        BeginInvoke(new Action(async () =>
+        {
+            try
+            {
+                await Task.Delay(50);
+
+                if (!IsDisposed)
+                {
+                    _web.Focus();
+                    ActiveControl = _web;
+                }
+            }
+            catch
+            {
+            }
+        }));
     }
 
     public void StartPipeServer(string pipeName)
