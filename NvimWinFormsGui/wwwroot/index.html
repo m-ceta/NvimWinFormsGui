@@ -256,19 +256,79 @@
                 });
             }
 
-            function getColors(hlId) {
-                const a = hl.get(hlId);
+            function getHighlightAttrs(hlId) {
+                const a = hl.get(hlId) || {};
 
-                let fg = (a && a.fg) ? a.fg : defFg;
-                let bg = (a && a.bg) ? a.bg : defBg;
+                let fg = a.fg || defFg;
+                let bg = a.bg || defBg;
 
-                if (a && a.reverse) {
+                if (a.reverse) {
                     const tmp = fg;
                     fg = bg;
                     bg = tmp;
                 }
 
+                return {
+                    fg,
+                    bg,
+                    bold: !!a.bold,
+                    italic: !!a.italic,
+                    underline: !!a.underline,
+                    undercurl: !!a.undercurl,
+                    special: a.special || fg
+                };
+            }
+
+            function getColors(hlId) {
+                const { fg, bg } = getHighlightAttrs(hlId);
                 return { fg, bg };
+            }
+
+            function setCtxFont(attrs) {
+                const style = attrs.italic ? "italic" : "normal";
+                const weight = attrs.bold ? "bold" : "normal";
+                ctx.font = `${style} ${weight} ${fontSize}px ${fontFamily}`;
+            }
+
+            function drawCellText(ch, x, y, fg, attrs) {
+                const baselineY = y + textYOffset;
+                ctx.save();
+                setCtxFont(attrs);
+                ctx.fillStyle = fg;
+                ctx.fillText(ch, x, baselineY);
+                ctx.restore();
+            }
+
+            function drawCellDecorations(x, y, width, attrs) {
+                if (!attrs.underline && !attrs.undercurl) return;
+
+                const uy = y + cellH - 2;
+                ctx.save();
+                ctx.strokeStyle = attrs.special || attrs.fg || defFg;
+                ctx.lineWidth = 1;
+
+                if (attrs.undercurl) {
+                    ctx.beginPath();
+                    const amp = Math.max(1, Math.floor(cellH / 10));
+                    const wave = Math.max(4, Math.floor(cellW / 2));
+                    let px = x;
+                    let up = true;
+                    ctx.moveTo(px, uy);
+                    while (px < x + width) {
+                        const nx = Math.min(px + wave / 2, x + width);
+                        ctx.lineTo(nx, uy + (up ? -amp : amp));
+                        px = nx;
+                        up = !up;
+                    }
+                    ctx.stroke();
+                } else {
+                    ctx.beginPath();
+                    ctx.moveTo(x, uy);
+                    ctx.lineTo(x + width, uy);
+                    ctx.stroke();
+                }
+
+                ctx.restore();
             }
 
             function paint() {
@@ -305,13 +365,13 @@
                         if (x >= w) continue;
 
                         const cell = grid[r][c];
-                        const { fg } = getColors(cell.hl);
+                        const attrs = getHighlightAttrs(cell.hl);
                         const ch = cell.ch || "";
 
                         if (!ch || ch === " ") continue;
 
-                        ctx.fillStyle = fg || defFg;
-                        ctx.fillText(ch, x, y + textYOffset);
+                        drawCellText(ch, x, y, attrs.fg || defFg, attrs);
+                        drawCellDecorations(x, y, cellW, attrs);
                     }
                 }
 
@@ -319,45 +379,48 @@
                 const cy = cursor.r * cellH;
                 if (cx < w && cy < h && cursor.r >= 0 && cursor.r < rows && cursor.c >= 0 && cursor.c < cols) {
                     const cell = grid[cursor.r][cursor.c] || { ch: " ", hl: 0, cont: false };
-                    const { fg, bg } = getColors(cell.hl);
+                    const attrs = getHighlightAttrs(cell.hl);
                     const ch = cell.ch || " ";
 
                     let cursorW = cellW;
                     if (ch && ch !== " ") {
                         const measuredW = ctx.measureText(ch).width;
-
-                        // 半角は最低1セル、全角など広い文字は実測幅ベース
-                        // 少しだけ余裕を持たせつつ、2セルを超えないようにする
                         cursorW = Math.max(cellW, Math.min(Math.ceil(measuredW), cellW * 2));
                     }
                     cursorW = Math.min(cursorW, w - cx);
 
                     if (currentCursorShape === "vertical") {
                         const cw = Math.max(1, Math.round((cellW * currentCellPercentage) / 100));
-                        ctx.fillStyle = fg || defFg;
+                        ctx.fillStyle = attrs.fg || defFg;
                         ctx.fillRect(cx, cy, cw, cellH);
 
                         if (ch !== " ") {
-                            ctx.fillStyle = fg || defFg;
-                            ctx.fillText(ch, cx, cy + textYOffset);
+                            drawCellText(ch, cx, cy, attrs.fg || defFg, attrs);
+                            drawCellDecorations(cx, cy, cursorW, attrs);
                         }
                     } else if (currentCursorShape === "horizontal") {
                         const chh = Math.max(1, Math.round((cellH * currentCellPercentage) / 100));
-                        ctx.fillStyle = fg || defFg;
+                        ctx.fillStyle = attrs.fg || defFg;
                         ctx.fillRect(cx, cy + (cellH - chh), cursorW, chh);
 
                         if (ch !== " ") {
-                            ctx.fillStyle = fg || defFg;
-                            ctx.fillText(ch, cx, cy + textYOffset);
+                            drawCellText(ch, cx, cy, attrs.fg || defFg, attrs);
+                            drawCellDecorations(cx, cy, cursorW, attrs);
                         }
                     } else {
                         // block cursor
-                        ctx.fillStyle = fg || defFg;
+                        ctx.fillStyle = attrs.fg || defFg;
                         ctx.fillRect(cx, cy, cursorW, cellH);
 
                         if (ch !== " ") {
-                            ctx.fillStyle = bg || defBg;
-                            ctx.fillText(ch, cx, cy + textYOffset);
+                            const cursorAttrs = {
+                                ...attrs,
+                                fg: attrs.bg || defBg,
+                                bg: attrs.fg || defFg,
+                                special: attrs.special || attrs.bg || defBg
+                            };
+                            drawCellText(ch, cx, cy, cursorAttrs.fg || defBg, cursorAttrs);
+                            drawCellDecorations(cx, cy, cursorW, cursorAttrs);
                         }
                     }
                 }
@@ -365,8 +428,7 @@
                 syncImePosition();
 
                 if (!gotAnyRedraw) {
-                    ctx.fillStyle = "rgba(255,255,255,0.7)";
-                    ctx.fillText("Waiting for Neovim redraw…", 8, 8 + textYOffset);
+                    drawCellText("Waiting for Neovim redraw…", 8, 8, "rgba(255,255,255,0.7)", { italic: false, bold: false, underline: false, undercurl: false, special: "rgba(255,255,255,0.7)" });
                 }
             }
 
@@ -524,9 +586,23 @@
 
                                 const fg = rgbIntToHex(rgbAttrs.foreground);
                                 const bg = rgbIntToHex(rgbAttrs.background);
+                                const sp = rgbIntToHex(rgbAttrs.special);
                                 const reverse = !!rgbAttrs.reverse;
+                                const bold = !!rgbAttrs.bold;
+                                const italic = !!rgbAttrs.italic;
+                                const underline = !!rgbAttrs.underline;
+                                const undercurl = !!rgbAttrs.undercurl;
 
-                                hl.set(id, { fg, bg, reverse });
+                                hl.set(id, {
+                                    fg,
+                                    bg,
+                                    reverse,
+                                    bold,
+                                    italic,
+                                    underline,
+                                    undercurl,
+                                    special: sp
+                                });
                             }
                             break;
                         }

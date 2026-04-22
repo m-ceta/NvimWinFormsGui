@@ -38,40 +38,67 @@ public sealed class LineGridControl : Control
         base.Render(context);
         if (_model is null) return;
 
-        var bg = Brush.Parse(_model.DefaultBackground);
-        context.FillRectangle(bg, Bounds);
+        var controlRect = new Rect(0, 0, Bounds.Width, Bounds.Height);
+
+        context.FillRectangle(
+            Brush.Parse(_model.DefaultBackground),
+            controlRect);
 
         var grid = _model.Grid;
+
         for (var row = 0; row < grid.Length; row++)
         {
             var y = row * _cellHeight;
+            if (y >= Bounds.Height) continue;
+
+            // Windowsî≈Ç∆ìØÇ∂Ç≠ÅAîwåiÇêÊÇ…1ÉZÉãÇ∏Ç¬ìhÇÈ
             for (var col = 0; col < grid[row].Length; col++)
             {
                 var x = col * _cellWidth;
-                var cell = grid[row][col];
-                var style = _model.Highlights.TryGetValue(cell.Hl, out var hl) ? hl : null;
-                if (!string.IsNullOrWhiteSpace(style?.Background))
-                    context.FillRectangle(Brush.Parse(style.Background!), new Rect(x, y, _cellWidth, _cellHeight));
+                if (x >= Bounds.Width) break;
 
-                if (!string.IsNullOrEmpty(cell.Ch) && cell.Ch != " ")
-                {
-                    var fg = style?.Foreground ?? _model.DefaultForeground;
-                    var text = new FormattedText(
-                        cell.Ch,
-                        System.Globalization.CultureInfo.InvariantCulture,
-                        FlowDirection.LeftToRight,
-                        _typeface,
-                        _fontSize,
-                        Brush.Parse(fg));
-                    context.DrawText(text, new Point(x, y));
-                }
+                var cell = grid[row][col];
+                var (_, bg) = GetColors(cell.Hl);
+
+                context.FillRectangle(
+                    Brush.Parse(bg),
+                    new Rect(x, y, _cellWidth, _cellHeight));
+            }
+
+            // Windowsî≈Ç∆ìØÇ∂Ç≠ÅAï∂éöÇÕâEÅ®ç∂Ç÷ï`Ç≠
+            for (var col = grid[row].Length - 1; col >= 0; col--)
+            {
+                var x = col * _cellWidth;
+                if (x >= Bounds.Width) continue;
+
+                var cell = grid[row][col];
+                if (string.IsNullOrEmpty(cell.Ch) || cell.Ch == " ")
+                    continue;
+
+                var (fg, _) = GetColors(cell.Hl);
+
+                var text = new FormattedText(
+                    cell.Ch,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    FlowDirection.LeftToRight,
+                    _typeface,
+                    _fontSize,
+                    Brush.Parse(fg));
+
+                context.DrawText(text, new Point(x, y));
             }
         }
 
         if (_model.CursorRow >= 0 && _model.CursorCol >= 0)
         {
-            context.DrawRectangle(null, new Pen(Brushes.White, 1),
-                new Rect(_model.CursorCol * _cellWidth, _model.CursorRow * _cellHeight, _cellWidth, _cellHeight));
+            context.DrawRectangle(
+                null,
+                new Pen(Brushes.White, 1),
+                new Rect(
+                    _model.CursorCol * _cellWidth,
+                    _model.CursorRow * _cellHeight,
+                    _cellWidth,
+                    _cellHeight));
         }
     }
 
@@ -191,5 +218,25 @@ public sealed class LineGridControl : Control
             Key.Insert => ("<Insert>", true),
             _ => null,
         };
+    }
+
+    private (string fg, string bg) GetColors(int hlId)
+    {
+        HighlightStyle? style = null;
+        if (_model is not null)
+            _model.Highlights.TryGetValue(hlId, out style);
+
+        var fg = !string.IsNullOrWhiteSpace(style?.Foreground)
+            ? style!.Foreground!
+            : _model?.DefaultForeground ?? "#d4d4d4";
+
+        var bg = !string.IsNullOrWhiteSpace(style?.Background)
+            ? style!.Background!
+            : _model?.DefaultBackground ?? "#1e1e1e";
+
+        if (style?.Reverse == true)
+            (fg, bg) = (bg, fg);
+
+        return (fg, bg);
     }
 }
