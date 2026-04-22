@@ -499,16 +499,23 @@ public sealed class MainForm : Form
         }
     }
 
+    private static string EscapeLiteralForNvimInput(string input)
+    {
+        if (string.IsNullOrEmpty(input)) return input;
+
+        // nvim_input() では <...> が特殊キー記法になるため、
+        // 通常文字の < は <LT> にエスケープする
+        return input.Replace("<", "<LT>");
+    }
+
     private async Task SendInputAsync(string input, bool isTermcode)
     {
         if (_nvim is null || string.IsNullOrEmpty(input)) return;
 
         try
         {
-            // nvim_input は <BS>, <Left>, <CR> などの key notation をそのまま解釈できる。
-            // replace_termcodes を挟むと byte[] / 文字列の扱い差で特殊キーが壊れやすいので、
-            // ここでは常にそのまま渡す。
-            await _nvim.CallAsync("nvim_input", input);
+            var send = isTermcode ? input : EscapeLiteralForNvimInput(input);
+            await _nvim.CallAsync("nvim_input", send);
         }
         catch
         {
@@ -722,6 +729,7 @@ public sealed class MainForm : Form
         var pathLit = ToLuaStringLiteral(sfd.FileName);
         _ = SafeCommandAsync($"lua vim.cmd('silent keepalt saveas! ' .. vim.fn.fnameescape({pathLit}))");
     }
+
 
     private void MenuCloseBuffer()
         => _ = SafeCommandAsync("confirm bd");
@@ -1044,6 +1052,8 @@ public sealed class MainForm : Form
         _treeMenu.Items.Add(new ToolStripMenuItem("垂直分割で開く", null, (_, __) => OpenSelectedInMode(OpenMode.VSplit)));
         _treeMenu.Items.Add(new ToolStripMenuItem("水平分割で開く", null, (_, __) => OpenSelectedInMode(OpenMode.Split)));
         _treeMenu.Items.Add(new ToolStripSeparator());
+        _treeMenu.Items.Add(new ToolStripMenuItem("現在のバッファと比較", null, async (_, __) => await CompareSelectedWithCurrentBufferAsync()));
+        _treeMenu.Items.Add(new ToolStripSeparator());
         _treeMenu.Items.Add(new ToolStripMenuItem("再読み込み", null, async (_, __) => await ReloadSelectedNodeAsync()));
     }
 
@@ -1055,6 +1065,72 @@ public sealed class MainForm : Form
         if (tag.IsDirectory) node.Toggle();
         else OpenFileInNvim(tag.FullPath, mode);
     }
+
+    private async Task CompareSelectedWithCurrentBufferAsync()
+    {
+        var node = _tree.SelectedNode;
+        if (node?.Tag is not FsTag tag || tag.IsDirectory) return;
+
+        await CompareFileWithCurrentBufferAsync(tag.FullPath);
+    }
+
+    private async Task CompareFileWithCurrentBufferAsync(string fullPath)
+    {
+        if (_nvim is null || string.IsNullOrWhiteSpace(fullPath) || !File.Exists(fullPath))
+            return;
+
+        var currentPath = await GetCurrentBufferPathAsync();
+        if (string.IsNullOrWhiteSpace(currentPath))
+        {
+            MessageBox.Show(
+                this,
+                "現在のバッファはファイルに紐付いていないため、比較を開始できません。",
+                "比較",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var pathLit = ToLuaStringLiteral(fullPath);
+        await SafeCommandAsync($"lua vim.cmd('vert diffsplit ' .. vim.fn.fnameescape({pathLit}))");
+
+        BeginInvoke(new Action(async () =>
+        {
+            try
+            {
+                await Task.Delay(50);
+                if (!IsDisposed)
+                {
+                    _web.Focus();
+                    ActiveControl = _web;
+                }
+            }
+            catch
+            {
+            }
+        }));
+    }
+
+    private async Task<string?> GetCurrentBufferPathAsync()
+    {
+        if (_nvim is null) return null;
+
+        try
+        {
+            var result = await _nvim.CallAsync("nvim_eval", "expand('%:p')");
+            var path = NvimRpcClient.ToJsonable(result)?.ToString();
+
+            if (string.IsNullOrWhiteSpace(path))
+                return null;
+
+            return path;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
 
     private async Task ReloadSelectedNodeAsync()
     {

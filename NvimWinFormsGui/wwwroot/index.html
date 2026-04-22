@@ -740,16 +740,28 @@
             ]);
 
             function keyToVim(e) {
-                if (e.key.startsWith("F") && /^\d+$/.test(e.key.substring(1))) return `<${e.key}>`;
-
-                if (SPECIAL.has(e.key)) {
-                    if (e.key === "Tab" && e.shiftKey) return "<S-Tab>";
-                    return SPECIAL.get(e.key);
+                if (e.key.startsWith("F") && /^\d+$/.test(e.key.substring(1))) {
+                    return { data: `<${e.key}>`, termcode: true };
                 }
 
-                if (e.ctrlKey && !e.altKey && e.key.length === 1) return `<C-${e.key.toLowerCase()}>`;
-                if (e.altKey && !e.ctrlKey && e.key.length === 1) return `<M-${e.key.toLowerCase()}>`;
-                if (!e.ctrlKey && !e.altKey && e.key.length === 1) return e.key;
+                if (SPECIAL.has(e.key)) {
+                    if (e.key === "Tab" && e.shiftKey) {
+                        return { data: "<S-Tab>", termcode: true };
+                    }
+                    return { data: SPECIAL.get(e.key), termcode: true };
+                }
+
+                if (e.ctrlKey && !e.altKey && e.key.length === 1) {
+                    return { data: `<C-${e.key.toLowerCase()}>`, termcode: true };
+                }
+
+                if (e.altKey && !e.ctrlKey && e.key.length === 1) {
+                    return { data: `<M-${e.key.toLowerCase()}>`, termcode: true };
+                }
+
+                if (!e.ctrlKey && !e.altKey && e.key.length === 1) {
+                    return { data: e.key, termcode: false };
+                }
 
                 return null;
             }
@@ -865,7 +877,7 @@
 
                 e.preventDefault();
                 e.stopPropagation();
-                post({ type: "input", data: k, termcode: k.startsWith("<") });
+                post({ type: "input", data: k.data, termcode: k.termcode });
             }, { passive: false });
 
             root.addEventListener("wheel", (e) => {
