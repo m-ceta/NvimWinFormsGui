@@ -1,11 +1,12 @@
-﻿using System;
+using NvimGuiCommon.Config;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
-namespace NvimWinFormsGui;
+namespace NvimGuiCommon.Theme;
 
 public static class NvimFontProbe
 {

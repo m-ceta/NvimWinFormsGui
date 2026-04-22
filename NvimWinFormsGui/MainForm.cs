@@ -1,12 +1,12 @@
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
-using NvimWinFormsGui.NvimRpc;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.IO.Pipes;
 using System.Text;
 using System.Threading;
+using NvimGuiCommon.Nvim;
 
 namespace NvimWinFormsGui;
 

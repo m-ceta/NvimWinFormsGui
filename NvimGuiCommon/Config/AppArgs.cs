@@ -1,6 +1,6 @@
-﻿using System;
+using System;
 
-namespace NvimWinFormsGui
+namespace NvimGuiCommon.Config
 {
     public sealed class AppArgs
     {

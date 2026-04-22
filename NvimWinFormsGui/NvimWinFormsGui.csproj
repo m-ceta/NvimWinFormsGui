@@ -37,4 +37,8 @@
 	<EmbeddedResource Include="wwwroot\index.html" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\NvimGuiCommon\NvimGuiCommon.csproj" />
+  </ItemGroup>
+
 </Project>

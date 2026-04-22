@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
-namespace NvimWinFormsGui.NvimRpc;
+namespace NvimGuiCommon.Nvim;
 
 /// <summary>
 /// Minimal MessagePack encoder/streaming decoder sufficient for Neovim msgpack-rpc.

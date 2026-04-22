@@ -1,0 +1,45 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:NvimGuiLinux.Avalonia.ViewModels"
+        xmlns:controls="clr-namespace:NvimGuiLinux.Avalonia.Controls"
+        xmlns:models="clr-namespace:NvimGuiCommon.Explorer;assembly=NvimGuiCommon"
+        x:Class="NvimGuiLinux.Avalonia.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Width="1200" Height="800" Title="Nvim Linux GUI">
+  <DockPanel>
+    <Menu DockPanel.Dock="Top">
+      <MenuItem Header="_File">
+        <MenuItem Header="Open selected" Command="{Binding OpenSelectedCommand}" />
+        <MenuItem Header="Save" Command="{Binding SaveCommand}" />
+        <MenuItem Header="Compare with current buffer" Command="{Binding CompareSelectedWithCurrentCommand}" />
+        <MenuItem Header="Close buffer" Command="{Binding CloseBufferCommand}" />
+      </MenuItem>
+      <MenuItem Header="_View">
+        <MenuItem Header="Reload tree" Command="{Binding ReloadTreeCommand}" />
+      </MenuItem>
+    </Menu>
+
+    <TextBlock DockPanel.Dock="Bottom" Margin="8,4" Text="{Binding StatusText}" />
+
+    <Grid ColumnDefinitions="280,5,*">
+      <Border Grid.Column="0" BorderBrush="Gray" BorderThickness="0,0,1,0">
+        <TreeView ItemsSource="{Binding Roots}" SelectionChanged="TreeView_OnSelectionChanged">
+          <TreeView.ItemTemplate>
+            <TreeDataTemplate DataType="models:FileTreeNode" ItemsSource="{Binding Children}">
+              <TextBlock Text="{Binding Name}" DoubleTapped="TreeNode_OnDoubleTapped">
+                <TextBlock.ContextMenu>
+                  <ContextMenu>
+                    <MenuItem Header="Open" Click="OpenSelectedMenuItem_OnClick" />
+                    <MenuItem Header="Compare with current buffer" Click="CompareSelectedMenuItem_OnClick" />
+                  </ContextMenu>
+                </TextBlock.ContextMenu>
+              </TextBlock>
+            </TreeDataTemplate>
+          </TreeView.ItemTemplate>
+        </TreeView>
+      </Border>
+      <GridSplitter Grid.Column="1" Width="5" Background="#404040" ResizeDirection="Columns" />
+      <controls:LineGridControl Grid.Column="2" x:Name="EditorGrid" />
+    </Grid>
+  </DockPanel>
+</Window>

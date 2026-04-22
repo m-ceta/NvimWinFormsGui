@@ -1,3 +1,4 @@
+using NvimGuiCommon.Config;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -8,9 +9,9 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace NvimWinFormsGui.NvimRpc;
+namespace NvimGuiCommon.Nvim;
 
-internal sealed class NvimRpcClient : IDisposable
+public sealed class NvimRpcClient : IDisposable
 {
     private readonly Process _proc;
     private readonly Stream _stdin;
@@ -59,7 +60,35 @@ internal sealed class NvimRpcClient : IDisposable
         _stderrTask = Task.Run(() => DrainStderrAsync(_cts.Token));
     }
 
-    public void Dispose()
+
+private NvimRpcClient(ProcessStartInfo psi)
+{
+    psi.UseShellExecute = false;
+    psi.RedirectStandardInput = true;
+    psi.RedirectStandardOutput = true;
+    psi.RedirectStandardError = true;
+    psi.CreateNoWindow = true;
+    psi.Environment["TERM"] = "xterm-256color";
+    psi.Environment["COLORTERM"] = "truecolor";
+
+    _proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+    _proc.Exited += (_, __) => Exited?.Invoke(_proc.ExitCode);
+
+    if (!_proc.Start())
+        throw new InvalidOperationException("Failed to start nvim.");
+
+    _stdin = _proc.StandardInput.BaseStream;
+    _stdout = _proc.StandardOutput.BaseStream;
+    _stderr = _proc.StandardError.BaseStream;
+    _reader = new MsgPackStreamReader(_stdout);
+
+    _pumpTask = Task.Run(() => PumpAsync(_cts.Token));
+    _stderrTask = Task.Run(() => DrainStderrAsync(_cts.Token));
+}
+
+public static NvimRpcClient Start(ProcessStartInfo psi) => new NvimRpcClient(psi);
+
+public void Dispose()
     {
         try { _cts.Cancel(); } catch { }
         try { _stdin.Dispose(); } catch { }
