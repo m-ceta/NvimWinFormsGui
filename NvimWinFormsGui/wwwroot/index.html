@@ -132,7 +132,8 @@
             min-width: 12ch;
             max-width: min(72ch, 90vw);
             max-height: min(18em, 55vh);
-            overflow: hidden;
+            overflow-x: hidden;
+            overflow-y: auto;
             background: color-mix(in srgb, var(--bg) 94%, #ffffff 6%);
             color: var(--fg);
             border: 1px solid rgba(255, 255, 255, 0.14);
@@ -170,6 +171,37 @@
             overflow-wrap: anywhere;
             word-break: break-all;
             box-sizing: border-box;
+        }
+
+        .msgline.msgstatus {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) max-content;
+            align-items: center;
+            gap: 1ch;
+            white-space: pre;
+            overflow: hidden;
+            overflow-wrap: normal;
+            word-break: normal;
+        }
+
+        .msgstatus-left {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: clip;
+        }
+
+        .msgstatus-mid {
+            min-width: 0;
+            overflow: hidden;
+            text-align: right;
+            text-overflow: clip;
+        }
+
+        .msgstatus-right {
+            min-width: 0;
+            overflow: hidden;
+            text-align: right;
+            text-overflow: clip;
         }
 
         .msgcode.error {
@@ -617,6 +649,7 @@
             let transientMessageTimer = 0;
             let tablineTopInset = 0;
             let popupmenuState = null;
+            let lastPopupBoundsKey = "";
 
             function escapeHtml(text) {
                 return String(text ?? "")
@@ -649,6 +682,12 @@
                     return name.slice(dot + 1, Math.min(name.length, dot + 4));
                 }
                 return name.slice(0, Math.min(3, name.length));
+            }
+
+            function tabDisplayLabel(label) {
+                const text = String(label || "").trim();
+                if (text.length <= 20) return text;
+                return `...${text.slice(-20)}`;
             }
 
             function chunksToText(chunks) {
@@ -814,8 +853,6 @@
                 for (const line of messageLines) {
                     lines.push(line && typeof line === "object" ? line.text || "" : String(line ?? ""));
                 }
-                if (msgShowmode) lines.push(msgShowmode);
-                if (msgRuler) lines.push(msgRuler);
 
                 const expandedLines = [];
                 for (const line of lines) {
@@ -843,7 +880,30 @@
                     messagesEl.appendChild(div);
                 }
 
-                msgGridVisible = expandedLines.length > 0;
+                const showStatusLine = cmdlines.size === 0 && (msgShowmode || msgShowcmd || msgRuler);
+                if (showStatusLine) {
+                    const div = document.createElement("div");
+                    div.className = "msgline msgstatus";
+
+                    const left = document.createElement("span");
+                    left.className = "msgstatus-left";
+                    left.textContent = msgShowmode || "";
+                    div.appendChild(left);
+
+                    const mid = document.createElement("span");
+                    mid.className = "msgstatus-mid";
+                    mid.textContent = msgShowcmd || "";
+                    div.appendChild(mid);
+
+                    const right = document.createElement("span");
+                    right.className = "msgstatus-right";
+                    right.textContent = msgRuler || "";
+                    div.appendChild(right);
+
+                    messagesEl.appendChild(div);
+                }
+
+                msgGridVisible = messagesEl.childElementCount > 0;
                 updateMessagePosition();
                 updateOverlayLayout();
             }
@@ -908,9 +968,11 @@
                     const cls = ["tabitem"];
                     if (tab.current) cls.push("current");
                     if (tab.changed) cls.push("modified");
-                    const label = escapeHtml(tab.label || String(tab.index || ""));
-                    const badge = escapeHtml(tabBadge(tab.label || String(tab.index || "")));
-                    return `<span class="${cls.join(" ")}" data-index="${tab.index}"><span class="tabicon">${badge}</span><span class="tablabel">${label}</span><button class="tabclose" data-index="${tab.index}" type="button">x</button></span>`;
+                    const fullLabel = tab.label || String(tab.index || "");
+                    const label = escapeHtml(tabDisplayLabel(fullLabel));
+                    const title = escapeHtml(fullLabel);
+                    const badge = escapeHtml(tabBadge(fullLabel));
+                    return `<span class="${cls.join(" ")}" data-index="${tab.index}" title="${title}"><span class="tabicon">${badge}</span><span class="tablabel">${label}</span><button class="tabclose" data-index="${tab.index}" type="button">x</button></span>`;
                 }).join("");
                 tablineEl.style.display = "block";
 
@@ -952,6 +1014,7 @@
                 if (!popupmenuState || !Array.isArray(popupmenuState.items) || popupmenuState.items.length === 0) {
                     popupmenuEl.style.display = "none";
                     popupmenuEl.innerHTML = "";
+                    lastPopupBoundsKey = "";
                     return;
                 }
 
@@ -975,15 +1038,27 @@
                     selectedEl.scrollIntoView({ block: "nearest" });
                 }
                 const rootRect = root.getBoundingClientRect();
-                post({
+                const bounds = {
                     type: "pumBounds",
-                    x: desiredLeft,
-                    y: Math.max(0, desiredTop),
+                    x: Math.round(desiredLeft),
+                    y: Math.round(Math.max(0, desiredTop)),
                     width: popupmenuEl.offsetWidth,
                     height: popupmenuEl.offsetHeight,
                     pumCol: (desiredLeft - rootRect.left) / Math.max(1, cellW),
                     pumRow: (Math.max(0, desiredTop) - rootRect.top) / Math.max(1, cellH)
-                });
+                };
+                const boundsKey = [
+                    bounds.x,
+                    bounds.y,
+                    bounds.width,
+                    bounds.height,
+                    bounds.pumCol.toFixed(3),
+                    bounds.pumRow.toFixed(3)
+                ].join(":");
+                if (boundsKey !== lastPopupBoundsKey) {
+                    lastPopupBoundsKey = boundsKey;
+                    post(bounds);
+                }
             }
 
             function updateOverlayLayout() {
@@ -1141,6 +1216,40 @@
                 ctx.restore();
             }
 
+            function isTerminalLikeMode(modeName) {
+                return String(modeName || "").toLowerCase().startsWith("terminal");
+            }
+
+            function shouldUseImeInsertCursor() {
+                return isTerminalLikeMode(currentModeName) && (composing || !!(ime && ime.value));
+            }
+
+            function drawImeInsertCursor(cx, cy, cursorW, cell, attrs) {
+                const bg = attrs.bg || defBg;
+                const fg = readableFg(attrs.fg, bg);
+                const ch = cell.ch || " ";
+
+                if (ch !== " ") {
+                    ctx.save();
+                    ctx.globalAlpha = 0.58;
+                    ctx.fillStyle = bg || defBg;
+                    ctx.fillRect(cx, cy, cursorW, cellH);
+                    ctx.restore();
+
+                    ctx.save();
+                    ctx.globalAlpha = 0.45;
+                    drawCellText(ch, cx, cy, fg, attrs);
+                    drawCellDecorations(cx, cy, cursorW, attrs);
+                    ctx.restore();
+                }
+
+                const lineW = Math.max(1, Math.min(2, Math.round(cellW * 0.18)));
+                ctx.save();
+                ctx.fillStyle = fg || defFg;
+                ctx.fillRect(cx, cy + 1, lineW, Math.max(1, cellH - 2));
+                ctx.restore();
+            }
+
             function paint() {
                 const w = root.clientWidth;
                 const h = root.clientHeight;
@@ -1231,7 +1340,9 @@
                         }
                         cursorW = Math.min(cursorW, w - cx);
 
-                        if (currentCursorShape === "vertical") {
+                        if (shouldUseImeInsertCursor()) {
+                            drawImeInsertCursor(cx, cy, cursorW, cell, attrs);
+                        } else if (currentCursorShape === "vertical") {
                             const cw = Math.max(1, Math.round((cellW * currentCellPercentage) / 100));
                             ctx.fillStyle = attrs.fg || defFg;
                             ctx.fillRect(cx, cy, cw, cellH);
@@ -2203,7 +2314,6 @@
                                         messageLines = [];
                                     }
                                     msgShowcmd = "";
-                                    msgRuler = "";
                                 }
                                 debugEvent("mode_change", { raw: a, modeName });
                                 applyModeCursor(modeName);
@@ -2346,11 +2456,13 @@
                 suppressNextInputText = null;
                 setImeComposingVisual(true);
                 syncImePosition();
+                schedulePaint();
             });
 
             ime.addEventListener("compositionupdate", () => {
                 setImeComposingVisual(true);
                 syncImePosition();
+                schedulePaint();
             });
 
             ime.addEventListener("compositionend", (e) => {
@@ -2365,6 +2477,7 @@
 
                 ime.value = "";
                 syncImePosition();
+                schedulePaint();
             });
 
             ime.addEventListener("input", () => {
@@ -2374,6 +2487,7 @@
                 if (!v) {
                     ime.value = "";
                     syncImePosition();
+                    schedulePaint();
                     return;
                 }
 
@@ -2381,6 +2495,7 @@
                     suppressNextInputText = null;
                     ime.value = "";
                     syncImePosition();
+                    schedulePaint();
                     return;
                 }
 
@@ -2388,6 +2503,7 @@
                 post({ type: "input", data: v, termcode: false });
                 ime.value = "";
                 syncImePosition();
+                schedulePaint();
             });
 
             ime.addEventListener("keydown", (e) => {

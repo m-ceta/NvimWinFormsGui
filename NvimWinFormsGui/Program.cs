@@ -10,8 +10,8 @@ namespace NvimWinFormsGui;
 
 internal static class Program
 {
-    private const string MutexName = "NvimWinFormsGui2.Singleton";
-    private const string PipeName = "NvimWinFormsGui2.OpenFilePipe";
+    private const string MutexName = "NvimWinFormsGui.Singleton";
+    private const string PipeName = "NvimWinFormsGui.OpenFilePipe";
 
     [STAThread]
     static void Main(string[] args)
