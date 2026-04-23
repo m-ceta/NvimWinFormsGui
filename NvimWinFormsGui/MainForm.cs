@@ -107,6 +107,9 @@ public sealed class MainForm : Form
     private readonly string _stateFilePath =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                      "NvimWinFormsGui", "tree_state.json");
+    private readonly string _debugLogPath =
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                     "NvimWinFormsGui", "ui_debug.log");
 
     private bool _restoreInProgress;
 
@@ -361,6 +364,38 @@ public sealed class MainForm : Form
                 await SafeCommandAsync(msg.data!);
                 return;
 
+            case "pumBounds":
+                if (_nvim is null) return;
+                if (msg.width <= 0 || msg.height <= 0) return;
+                try
+                {
+                    await _nvim.CallAsync(
+                        "nvim_ui_pum_set_bounds",
+                        (double)msg.width,
+                        (double)msg.height,
+                        msg.pumRow,
+                        msg.pumCol);
+                }
+                catch
+                {
+                }
+                return;
+
+            case "tabSwitch":
+                if (_nvim is null || msg.index <= 0) return;
+                await SafeCommandAsync($"tabnext {msg.index}");
+                return;
+
+            case "tabClose":
+                if (_nvim is null || msg.index <= 0) return;
+                await SafeCommandAsync($"tabclose {msg.index}");
+                return;
+
+            case "debug":
+                if (!string.IsNullOrWhiteSpace(msg.data))
+                    AppendDebugLog(msg.data!);
+                return;
+
             case "title":
                 if (!string.IsNullOrWhiteSpace(msg.title))
                 {
@@ -454,6 +489,24 @@ public sealed class MainForm : Form
         }
     }
 
+    private void AppendDebugLog(string line)
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(_debugLogPath);
+            if (!string.IsNullOrWhiteSpace(dir))
+                Directory.CreateDirectory(dir);
+
+            File.AppendAllText(
+                _debugLogPath,
+                DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff ") + line + Environment.NewLine,
+                Encoding.UTF8);
+        }
+        catch
+        {
+        }
+    }
+
     private async Task AttachUiAsync()
     {
         if (_nvim is null || _uiAttached) return;
@@ -461,7 +514,11 @@ public sealed class MainForm : Form
         var opts = new Dictionary<string, object?>
         {
             ["rgb"] = true,
-            ["ext_linegrid"] = true
+            ["ext_linegrid"] = true,
+            ["ext_multigrid"] = true,
+            ["ext_messages"] = true,
+            ["ext_popupmenu"] = true,
+            ["ext_tabline"] = true
         };
 
         try
@@ -1647,5 +1704,12 @@ public sealed class MainForm : Form
         public int grid { get; set; }
         public int row { get; set; }
         public int col { get; set; }
+        public int x { get; set; }
+        public int y { get; set; }
+        public int width { get; set; }
+        public int height { get; set; }
+        public int index { get; set; }
+        public double pumRow { get; set; }
+        public double pumCol { get; set; }
     }
 }

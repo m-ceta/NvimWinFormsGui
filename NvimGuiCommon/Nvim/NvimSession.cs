@@ -51,7 +51,10 @@ public sealed class NvimSession : IDisposable
             ["rgb"] = true,
             ["ext_linegrid"] = true,
             ["ext_hlstate"] = true,
-            ["ext_multigrid"] = false,
+            ["ext_multigrid"] = true,
+            ["ext_messages"] = true,
+            ["ext_popupmenu"] = false,
+            ["ext_tabline"] = false,
         };
 
         await _rpc.CallAsync("nvim_ui_attach", cols, rows, options);

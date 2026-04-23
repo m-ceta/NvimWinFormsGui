@@ -22,6 +22,8 @@ public partial class MainWindow : Window
             var grid = this.FindControl<LineGridControl>("EditorGrid");
             grid?.Bind(vm.Editor, vm.Grid);
             await vm.InitializeAsync();
+            if (grid is not null)
+                await grid.ResizeNvimToBoundsAsync();
         }
     }
 

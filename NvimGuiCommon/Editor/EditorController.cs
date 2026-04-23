@@ -22,6 +22,8 @@ public sealed class EditorController : IDisposable
     {
         await _session.StartAsync();
         await _session.AttachUiAsync(_cols, _rows);
+        await _session.CommandAsync("set laststatus=2");
+        await _session.CommandAsync("redrawstatus!");
     }
 
     public Task ResizeAsync(int cols, int rows)
@@ -39,7 +41,7 @@ public sealed class EditorController : IDisposable
     public Task<string?> GetCurrentBufferPathAsync() => _session.GetCurrentBufferPathAsync();
     public Task DiffSplitAsync(string path) => _session.CommandAsync($"vert diffsplit {EscapeEx(path)}");
 
-    public Task OpenFileAsync(string fullPath, OpenMode mode)
+    public async Task OpenFileAsync(string fullPath, OpenMode mode)
     {
         var cmd = mode switch
         {
@@ -49,7 +51,9 @@ public sealed class EditorController : IDisposable
             OpenMode.Split => $"split {EscapeEx(fullPath)}",
             _ => $"edit {EscapeEx(fullPath)}",
         };
-        return _session.CommandAsync(cmd);
+        await _session.CommandAsync(cmd);
+        await _session.CommandAsync("redrawstatus!");
+        await _session.CommandAsync("redraw!");
     }
 
     private static string EscapeEx(string path)

@@ -39,6 +39,179 @@
             white-space: pre-wrap;
         }
 
+        #tabline {
+            position: fixed;
+            left: 0;
+            right: 0;
+            top: 0;
+            display: none;
+            min-height: 1.9em;
+            padding: 2px 6px;
+            background: color-mix(in srgb, var(--bg) 88%, #ffffff 12%);
+            color: var(--fg);
+            font: 14px/1 monospace;
+            z-index: 30;
+            box-sizing: border-box;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        .tabitem {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 3px 8px;
+            margin-right: 4px;
+            border-radius: 4px 4px 0 0;
+            background: rgba(255, 255, 255, 0.08);
+            cursor: default;
+        }
+
+        .tabitem.current {
+            background: rgba(255, 255, 255, 0.2);
+            font-weight: 700;
+        }
+
+        .tabicon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 1.6em;
+            padding: 0 0.35em;
+            border-radius: 999px;
+            font-size: 0.82em;
+            background: rgba(255, 255, 255, 0.1);
+            opacity: 0.85;
+        }
+
+        .tabclose {
+            border: 0;
+            background: transparent;
+            color: inherit;
+            padding: 0 2px;
+            font: inherit;
+            line-height: 1;
+            opacity: 0.7;
+            cursor: pointer;
+        }
+
+        .tabclose:hover {
+            opacity: 1;
+        }
+
+        .tabitem.modified::after {
+            content: " +";
+        }
+
+
+        #messages {
+            position: fixed;
+            left: 0;
+            right: 0;
+            top: 0;
+            padding: 4px 8px;
+            font: 14px/1 monospace;
+            color: var(--fg);
+            background: transparent;
+            pointer-events: none;
+            z-index: 20;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            box-sizing: border-box;
+            max-width: none;
+        }
+
+        #messages:empty {
+            display: none;
+        }
+
+        #popupmenu {
+            position: fixed;
+            display: none;
+            min-width: 12ch;
+            max-width: min(72ch, 90vw);
+            max-height: min(18em, 55vh);
+            overflow: hidden;
+            background: color-mix(in srgb, var(--bg) 94%, #ffffff 6%);
+            color: var(--fg);
+            border: 1px solid rgba(255, 255, 255, 0.14);
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+            font: 14px/1 monospace;
+            z-index: 40;
+            box-sizing: border-box;
+        }
+
+        .pumitem {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto auto;
+            column-gap: 1ch;
+            padding: 2px 8px;
+            white-space: pre;
+        }
+
+        .pumitem.selected {
+            background: rgba(255, 255, 255, 0.18);
+        }
+
+        .pum-kind,
+        .pum-extra {
+            opacity: 0.75;
+        }
+
+        .msgline {
+            display: block;
+            width: 100%;
+            max-width: 100%;
+            margin: 0;
+            padding: 0;
+            background: var(--bg);
+            white-space: break-spaces;
+            overflow-wrap: anywhere;
+            word-break: break-all;
+            box-sizing: border-box;
+        }
+
+        .msgcode.error {
+            color: #ffffff;
+            background: #8f2d2d;
+        }
+
+        #cmdblock,
+        #cmdline {
+            position: fixed;
+            left: 0;
+            right: 0;
+            padding: 0 8px;
+            font: 14px/1 monospace;
+            color: var(--fg);
+            background: var(--bg);
+            pointer-events: none;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            z-index: 25;
+            box-sizing: border-box;
+        }
+
+        #cmdblock {
+            bottom: 2.4em;
+            display: none;
+            max-height: 40vh;
+            overflow: hidden;
+        }
+
+        #cmdline {
+            bottom: 0;
+            display: none;
+            white-space: pre;
+            overflow: hidden;
+        }
+
+        .cmdline-cursor {
+            background: var(--fg);
+            color: var(--bg);
+        }
+
         #ime {
             position: absolute;
             left: 0;
@@ -68,8 +241,13 @@
     </style>
 </head>
 <body>
+    <div id="tabline"></div>
     <div id="root"><textarea id="ime" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea><canvas id="cv"></canvas></div>
     <div id="booterr"></div>
+    <div id="messages"></div>
+    <div id="cmdblock"></div>
+    <div id="cmdline"></div>
+    <div id="popupmenu"></div>
 
     <script>
         (() => {
@@ -77,6 +255,11 @@
             const cv = document.getElementById("cv");
             const errEl = document.getElementById("booterr");
             const ime = document.getElementById("ime");
+            const tablineEl = document.getElementById("tabline");
+            const messagesEl = document.getElementById("messages");
+            const cmdblockEl = document.getElementById("cmdblock");
+            const cmdlineEl = document.getElementById("cmdline");
+            const popupmenuEl = document.getElementById("popupmenu");
 
             let composing = false;
             let suppressNextInputText = null;
@@ -104,7 +287,7 @@
             // --- font / cell metrics ---
             let fontFamily = "Consolas, monospace";
             let fontSize = 14;
-            let lineHeight = 1.2;
+            let lineHeight = 1.1;
             let cellW = 8, cellH = 16;
             let dpr = 1;
             let fontAscent = 11;
@@ -142,7 +325,7 @@
 
                 const cr = calcColsRows();
                 if (cr.cols !== cols || cr.rows !== rows) {
-                    allocGrid(cr.cols, cr.rows);
+                    allocGrid(cr.cols, cr.rows, 1);
                     post({ type: "resize", cols: cr.cols, rows: cr.rows });
                 }
 
@@ -174,6 +357,12 @@
 
                 const textH = fontAscent + fontDescent;
                 textYOffset = Math.round((cellH - textH) / 2) + fontAscent + 1;
+
+                const overlayFont = `${fontSize}px/${Math.max(1, cellH)}px ${fontFamily}`;
+                if (messagesEl) messagesEl.style.font = overlayFont;
+                if (cmdblockEl) cmdblockEl.style.font = overlayFont;
+                if (cmdlineEl) cmdlineEl.style.font = overlayFont;
+                if (popupmenuEl) popupmenuEl.style.font = overlayFont;
             }
 
             function calcColsRows() {
@@ -196,52 +385,653 @@
                 return "#" + s;
             }
 
-            // --- grid state (grid=1 only) ---
+            // --- grid state ---
             let cols = 80, rows = 24;
             let grid = [];
-            let cursor = { r: 0, c: 0 };
+            let cursor = { grid: 1, r: 0, c: 0 };
             let modeInfos = [];
             let currentModeName = "normal";
             let currentCursorShape = "block"; // block | vertical | horizontal
             let currentCellPercentage = 25;   // ver25 / hor20 など
             let gotAnyRedraw = false;
             let dirtyRows = null;
+            let cursorVisible = true;
+            let deferredPaintNeeded = false;
 
-            function markDirtyRow(r) {
-                if (!dirtyRows) return;
-                if (r >= 0 && r < dirtyRows.length) dirtyRows[r] = 1;
-            }
+            const grids = new Map(); // id -> { id, cols, rows, cells, dirtyRows, x, y, z, visible, floating }
 
-            function markAllDirty() {
-                if (!dirtyRows) return;
-                dirtyRows.fill(1);
-            }
+            function makeGridState(id, newCols, newRows) {
+                const cells = new Array(newRows);
+                const dr = new Uint8Array(newRows);
+                dr.fill(1);
 
-            function allocGrid(newCols, newRows) {
-                cols = newCols;
-                rows = newRows;
-                grid = new Array(rows);
-                dirtyRows = new Uint8Array(rows);
-                dirtyRows.fill(1);
-
-                for (let r = 0; r < rows; r++) {
-                    const row = new Array(cols);
-                    for (let c = 0; c < cols; c++) {
+                for (let r = 0; r < newRows; r++) {
+                    const row = new Array(newCols);
+                    for (let c = 0; c < newCols; c++) {
                         row[c] = { ch: " ", hl: 0, cont: false };
                     }
-                    grid[r] = row;
+                    cells[r] = row;
+                }
+
+                return {
+                    id,
+                    cols: newCols,
+                    rows: newRows,
+                    outerCols: newCols,
+                    outerRows: newRows,
+                    cells,
+                    dirtyRows: dr,
+                    x: 0,
+                    y: 0,
+                    z: id === 1 ? 0 : 100 + id,
+                    visible: true,
+                    floating: false,
+                    viewport: null,
+                    viewportMargins: { top: 0, bottom: 0, left: 0, right: 0 }
+                };
+            }
+
+            function getGridState(id, create = false) {
+                let gs = grids.get(id);
+                if (!gs && create) {
+                    gs = makeGridState(id, id === 1 ? cols : 1, id === 1 ? rows : 1);
+                    grids.set(id, gs);
+                }
+                return gs || null;
+            }
+
+            function markDirtyRow(r, gridId = 1) {
+                const gs = getGridState(gridId);
+                if (!gs || !gs.dirtyRows) return;
+                if (r >= 0 && r < gs.dirtyRows.length) gs.dirtyRows[r] = 1;
+                if (gridId === 1) dirtyRows = gs.dirtyRows;
+            }
+
+            function markAllDirty(gridId = null) {
+                if (gridId == null) {
+                    for (const gs of grids.values()) {
+                        if (gs.dirtyRows) gs.dirtyRows.fill(1);
+                    }
+                    if (grids.has(1)) dirtyRows = grids.get(1).dirtyRows;
+                    return;
+                }
+
+                const gs = getGridState(gridId);
+                if (!gs || !gs.dirtyRows) return;
+                gs.dirtyRows.fill(1);
+                if (gridId === 1) dirtyRows = gs.dirtyRows;
+            }
+
+            function allocGrid(newCols, newRows, gridId = 1) {
+                const prev = getGridState(gridId);
+                const gs = makeGridState(gridId, newCols, newRows);
+                if (prev) {
+                    const copyRows = Math.min(prev.rows || 0, newRows);
+                    const copyCols = Math.min(prev.cols || 0, newCols);
+                    for (let r = 0; r < copyRows; r++) {
+                        for (let c = 0; c < copyCols; c++) {
+                            const src = prev.cells?.[r]?.[c];
+                            if (!src) continue;
+                            gs.cells[r][c] = {
+                                ch: src.ch || " ",
+                                hl: src.hl || 0,
+                                cont: !!src.cont
+                            };
+                        }
+                    }
+                    if (gs.dirtyRows) gs.dirtyRows.fill(1);
+                    gs.x = prev.x || 0;
+                    gs.y = prev.y || 0;
+                    gs.z = prev.z || gs.z;
+                    gs.visible = prev.visible !== false;
+                    gs.floating = !!prev.floating;
+                    gs.focusable = !!prev.focusable;
+                    gs.overlayManaged = !!prev.overlayManaged;
+                    gs.screenRow = prev.screenRow;
+                    gs.screenCol = prev.screenCol;
+                    gs.viewport = prev.viewport || null;
+                    gs.viewportMargins = prev.viewportMargins || { top: 0, bottom: 0, left: 0, right: 0 };
+                    if (prev.floating) {
+                        gs.outerCols = prev.outerCols;
+                        gs.outerRows = prev.outerRows;
+                    }
+                }
+                if (gridId === 1) {
+                    cols = newCols;
+                    rows = newRows;
+                    grid = gs.cells;
+                    dirtyRows = gs.dirtyRows;
+                }
+                grids.set(gridId, gs);
+            }
+
+            function clearGrid(gridId = 1) {
+                const gs = getGridState(gridId);
+                if (!gs) return;
+
+                for (let r = 0; r < gs.rows; r++) {
+                    for (let c = 0; c < gs.cols; c++) {
+                        gs.cells[r][c].ch = " ";
+                        gs.cells[r][c].hl = 0;
+                        gs.cells[r][c].cont = false;
+                    }
+                }
+                markAllDirty(gridId);
+            }
+
+            function eachVisibleGridInPaintOrder() {
+                return [...grids.values()]
+                    .filter(g => g.id !== msgGridId)
+                    .filter(g => !g.overlayManaged)
+                    .filter(g => !shouldHideAsOverlayCompanion(g))
+                    .filter(g => !shouldHideAsLowProfileFooterFloat(g))
+                    .filter(g => !shouldHideAsShowmodeFloat(g))
+                    .filter(g => g.id === 1 || g.visible !== false)
+                    .sort((a, b) => (a.z || 0) - (b.z || 0));
+            }
+
+            function isOverlayManagedFloat(gs) {
+                if (!gs || !gs.floating || !gs.focusable) return false;
+                const screenRow = Number(gs.screenRow);
+                const rowsCount = Math.max(0, gs.rows || 0);
+                const colsCount = Math.max(0, gs.cols || 0);
+                if (Number.isFinite(screenRow) && screenRow >= Math.max(0, rows - 4)) {
+                    return true;
+                }
+                if (rowsCount > 2) return false;
+                return Number.isFinite(screenRow)
+                    && screenRow >= Math.max(0, rows - 6)
+                    && colsCount >= Math.max(20, Math.floor(cols * 0.45));
+            }
+
+            function shouldHideAsOverlayCompanion(gs) {
+                if (!gs || gs.overlayManaged || !gs.floating || gs.focusable) return false;
+                const row = Number(gs.screenRow);
+                const col = Number(gs.screenCol);
+                if (!Number.isFinite(row) || !Number.isFinite(col)) return false;
+
+                for (const other of grids.values()) {
+                    if (!other || !other.overlayManaged) continue;
+                    const otherRow = Number(other.screenRow);
+                    const otherCol = Number(other.screenCol);
+                    if (!Number.isFinite(otherRow) || !Number.isFinite(otherCol)) continue;
+                    if (otherRow !== row) continue;
+
+                    const otherEndCol = otherCol + Math.max(0, other.cols || 0);
+                    const rowOverlap = Math.min(gs.rows || 0, other.rows || 0);
+                    if (rowOverlap <= 0) continue;
+
+                    if (col >= otherCol - 1 && col <= otherEndCol + 1) {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            function shouldHideAsLowProfileFooterFloat(gs) {
+                if (!gs || !gs.floating) return false;
+                const row = Number(gs.screenRow);
+                if (!Number.isFinite(row) || row < Math.floor(rows * 0.5)) return false;
+                const rowsCount = Math.max(0, gs.rows || 0);
+                const colsCount = Math.max(0, gs.cols || 0);
+
+                if (gs.focusable) {
+                    return rowsCount <= 2 && colsCount >= 12;
+                }
+
+                return colsCount <= 2 && rowsCount <= 12;
+            }
+
+            function shouldHideAsShowmodeFloat(gs) {
+                if (!gs || !gs.floating || gs.focusable) return false;
+                if (!msgShowmode) return false;
+                const row = Number(gs.screenRow);
+                if (!Number.isFinite(row) || row > 1) return false;
+                const colsCount = Math.max(0, gs.cols || 0);
+                const rowsCount = Math.max(0, gs.rows || 0);
+                if (rowsCount > 8) return false;
+                return colsCount <= 30 || colsCount === 1;
+            }
+
+            function shouldDebugFloatGridLine(gs, text) {
+                if (!gs || !gs.floating) return false;
+                const value = String(text ?? "");
+                if (!value.trim()) return false;
+                if (/\b(def|class|async|return|function|lambda|self|None|True|False)\b/.test(value)) return true;
+                const rowsCount = Math.max(0, gs.rows || 0);
+                const colsCount = Math.max(0, gs.cols || 0);
+                return rowsCount > 1 && colsCount > 8 && value.length >= 3;
+            }
+
+            // --- messages ---
+            let msgShowmode = "";
+            let msgShowcmd = "";
+            let msgRuler = "";
+            let messageLines = [];
+            const cmdlines = new Map();
+            let cmdlineBlock = [];
+            let msgGridRow = null;
+            let msgGridVisible = false;
+            let msgGridId = null;
+            let transientMessageTimer = 0;
+            let tablineTopInset = 0;
+            let popupmenuState = null;
+
+            function escapeHtml(text) {
+                return String(text ?? "")
+                    .replace(/&/g, "&amp;")
+                    .replace(/</g, "&lt;")
+                    .replace(/>/g, "&gt;");
+            }
+
+            function stableKey(value) {
+                if (value == null) return "";
+                if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+                    return String(value);
+                }
+                try {
+                    return JSON.stringify(value);
+                } catch {
+                    return String(value);
                 }
             }
 
-            function clearGrid() {
-                for (let r = 0; r < rows; r++) {
-                    for (let c = 0; c < cols; c++) {
-                        grid[r][c].ch = " ";
-                        grid[r][c].hl = 0;
-                        grid[r][c].cont = false;
+            function tabBadge(label) {
+                const text = String(label || "").trim();
+                if (!text) return "tab";
+                const lower = text.toLowerCase();
+                if (lower.endsWith("/") || lower.endsWith("\\")) return "dir";
+                const parts = lower.split(/[\\/]/);
+                const name = parts[parts.length - 1];
+                const dot = name.lastIndexOf(".");
+                if (dot > 0 && dot < name.length - 1) {
+                    return name.slice(dot + 1, Math.min(name.length, dot + 4));
+                }
+                return name.slice(0, Math.min(3, name.length));
+            }
+
+            function chunksToText(chunks) {
+                if (!Array.isArray(chunks)) return String(chunks ?? "");
+                let s = "";
+                for (const ch of chunks) {
+                    const a = normalizeArg(ch);
+                    if (a.length >= 2) s += String(a[1] ?? "");
+                    else s += String(a[0] ?? "");
+                }
+                return s;
+            }
+
+            function isSwapfileConfirmText(text) {
+                const value = String(text ?? "");
+                return value.includes("Found a swap file by the name")
+                    || (value.includes("Swap file") && value.includes("already exists!"));
+            }
+
+            function normalizeConfirmLayout(text) {
+                const lines = String(text ?? "").split("\n");
+                if (lines.length >= 3 && /^Found a swap file by the name\b/.test(lines[1] || "")) {
+                    let datedText = "";
+                    const explicitDatedIndex = lines.findIndex((line, index) => index > 1 && /^\s*dated:\s*/i.test(String(line ?? "")));
+                    if (explicitDatedIndex >= 0) {
+                        datedText = String(lines[explicitDatedIndex] ?? "").trim();
+                        lines.splice(explicitDatedIndex, 1);
+                    } else {
+                        const datedLine = String(lines[2] ?? "").trim();
+                        if (datedLine && !datedLine.includes(":") && /\d{4}\b/.test(datedLine)) {
+                            datedText = `dated: ${datedLine}`;
+                            lines.splice(2, 1);
+                        }
+                    }
+                    if (datedText) {
+                        lines[0] = `${String(lines[0] ?? "").trimEnd()}  ${datedText}`;
                     }
                 }
-                markAllDirty();
+                return lines.join("\n");
+            }
+
+            function normalizeMessageContent(kind, content) {
+                const text = String(content ?? "");
+                if (kind === "confirm" && isSwapfileConfirmText(text)) {
+                    const withHeader = /^E325: ATTENTION\b/m.test(text) ? text : `E325: ATTENTION\n${text}`;
+                    return normalizeConfirmLayout(withHeader);
+                }
+                return text;
+            }
+
+            function hasConfirmMessages() {
+                return messageLines.some(line => line && typeof line === "object" && line.kind === "confirm");
+            }
+
+            function clearTransientMessageTimer() {
+                if (transientMessageTimer) {
+                    clearTimeout(transientMessageTimer);
+                    transientMessageTimer = 0;
+                }
+            }
+
+            function clearTransientMessages() {
+                const nextLines = messageLines.filter(line => !(line && typeof line === "object" && line.transient));
+                if (nextLines.length !== messageLines.length) {
+                    messageLines = nextLines;
+                }
+                clearTransientMessageTimer();
+            }
+
+            function scheduleTransientMessageClear() {
+                clearTransientMessageTimer();
+                if (!messageLines.some(line => line && typeof line === "object" && line.transient)) return;
+                transientMessageTimer = setTimeout(() => {
+                    clearTransientMessages();
+                    refreshMessages();
+                }, 3500);
+            }
+
+            function renderCmdline(level) {
+                if (!cmdlineEl) return;
+
+                if (cmdlines.size === 0) {
+                    cmdlineEl.style.display = "none";
+                    cmdlineEl.innerHTML = "";
+                    cmdlineEl.dataset.wrapPrompt = "0";
+                    updateOverlayLayout();
+                    return;
+                }
+
+                const activeLevel = level && cmdlines.has(level)
+                    ? level
+                    : Math.max(...cmdlines.keys());
+                const state = cmdlines.get(activeLevel);
+                if (!state) {
+                    cmdlineEl.style.display = "none";
+                    cmdlineEl.innerHTML = "";
+                    cmdlineEl.dataset.wrapPrompt = "0";
+                    updateOverlayLayout();
+                    return;
+                }
+
+                const prefix = `${state.firstc || ""}${state.prompt || ""}${" ".repeat(Math.max(0, state.indent || 0))}`;
+                const special = state.specialChar || "";
+                const body = state.text || "";
+                const bodyCursor = Math.max(0, Math.min(body.length, state.pos || 0));
+                let combined = body;
+                if (special) {
+                    combined = state.specialShift
+                        ? body.slice(0, bodyCursor) + special + body.slice(bodyCursor)
+                        : body.slice(0, bodyCursor) + special + body.slice(Math.min(body.length, bodyCursor + 1));
+                }
+                const cursorPos = Math.max(0, Math.min(combined.length, bodyCursor));
+                const fullText = prefix + combined;
+                const cursorIndex = Math.max(0, Math.min(fullText.length, prefix.length + cursorPos));
+                const wrapPrompt = !state.firstc && !!state.prompt && !body;
+
+                cmdlineEl.dataset.wrapPrompt = wrapPrompt ? "1" : "0";
+                cmdlineEl.style.whiteSpace = wrapPrompt ? "pre-wrap" : "pre";
+                cmdlineEl.style.height = wrapPrompt ? "auto" : `${cellH}px`;
+                cmdlineEl.style.minHeight = `${cellH}px`;
+                cmdlineEl.style.overflow = wrapPrompt ? "visible" : "hidden";
+                cmdlineEl.style.overflowWrap = wrapPrompt ? "anywhere" : "normal";
+                cmdlineEl.style.width = "auto";
+                cmdlineEl.style.maxWidth = "none";
+
+                if (fullText.length === 0) {
+                    cmdlineEl.innerHTML = '<span class="cmdline-cursor">&nbsp;</span>';
+                    cmdlineEl.style.display = "block";
+                    updateOverlayLayout();
+                    return;
+                }
+
+                const before = escapeHtml(fullText.slice(0, cursorIndex));
+                const cursorChar = escapeHtml(fullText[cursorIndex] ?? " ");
+                const after = escapeHtml(fullText.slice(cursorIndex + 1));
+                cmdlineEl.innerHTML = `${before}<span class="cmdline-cursor">${cursorChar === " " ? "&nbsp;" : cursorChar}</span>${after}`;
+                cmdlineEl.style.display = "block";
+                updateOverlayLayout();
+            }
+
+            function refreshCmdlineBlock() {
+                if (!cmdblockEl) return;
+
+                if (cmdlineBlock.length === 0) {
+                    cmdblockEl.style.display = "none";
+                    cmdblockEl.innerHTML = "";
+                    updateOverlayLayout();
+                    return;
+                }
+
+                cmdblockEl.innerHTML = cmdlineBlock
+                    .map(line => `<div>${escapeHtml(line)}</div>`)
+                    .join("");
+                cmdblockEl.style.display = "block";
+                updateOverlayLayout();
+            }
+
+            function refreshMessages() {
+                if (!messagesEl) return;
+                messagesEl.innerHTML = "";
+
+                const lines = [];
+                for (const line of messageLines) {
+                    lines.push(line && typeof line === "object" ? line.text || "" : String(line ?? ""));
+                }
+                if (msgShowmode) lines.push(msgShowmode);
+                if (msgRuler) lines.push(msgRuler);
+
+                const expandedLines = [];
+                for (const line of lines) {
+                    const parts = String(line ?? "").split("\n");
+                    for (const part of parts) expandedLines.push(part);
+                }
+
+                const visibleLines = cmdlines.size > 0 ? expandedLines : expandedLines.slice(-8);
+                for (const line of visibleLines) {
+                    const div = document.createElement("div");
+                    div.className = "msgline";
+                    const text = String(line ?? "");
+                    const m = /^(E\d+:\s+ATTENTION)(.*)$/.exec(text);
+                    if (m) {
+                        const code = document.createElement("span");
+                        code.className = "msgcode error";
+                        code.textContent = m[1];
+                        div.appendChild(code);
+                        if (m[2]) {
+                            div.appendChild(document.createTextNode(m[2]));
+                        }
+                    } else {
+                        div.textContent = text;
+                    }
+                    messagesEl.appendChild(div);
+                }
+
+                msgGridVisible = expandedLines.length > 0;
+                updateMessagePosition();
+                updateOverlayLayout();
+            }
+
+            function debugEvent(name, payload) {
+                try {
+                    post({ type: "debug", data: JSON.stringify({ name, payload }) });
+                } catch {
+                }
+            }
+
+            let overlayBottomInset = 0;
+
+            function updateMessagePosition() {
+                if (!messagesEl) return;
+
+                if (!msgGridVisible || messagesEl.childElementCount === 0) {
+                    messagesEl.style.display = "none";
+                    messagesEl.style.maxHeight = "";
+                    messagesEl.style.overflow = "visible";
+                    return;
+                }
+
+                messagesEl.style.display = "block";
+                const topInset = root.offsetTop || 0;
+                if (Number.isFinite(msgGridRow)) {
+                    messagesEl.style.top = `${topInset + msgGridRow * cellH}px`;
+                    messagesEl.style.bottom = "auto";
+                    messagesEl.style.maxHeight = "";
+                    messagesEl.style.overflow = "visible";
+                } else if (hasConfirmMessages()) {
+                    messagesEl.style.top = "auto";
+                    messagesEl.style.bottom = `${overlayBottomInset}px`;
+                    messagesEl.style.maxHeight = "";
+                    messagesEl.style.overflow = "visible";
+                } else if (cmdlines.size > 0 || cmdlineBlock.length > 0) {
+                    messagesEl.style.top = "auto";
+                    messagesEl.style.bottom = `${overlayBottomInset}px`;
+                    messagesEl.style.maxHeight = "";
+                    messagesEl.style.overflow = "visible";
+                } else {
+                    const row = Math.max(0, rows - Math.max(1, messagesEl.childElementCount));
+                    messagesEl.style.top = `${topInset + row * cellH}px`;
+                    messagesEl.style.bottom = "auto";
+                    messagesEl.style.maxHeight = "";
+                    messagesEl.style.overflow = "visible";
+                }
+            }
+
+            function renderTabline(state) {
+                if (!tablineEl) return;
+
+                const tabs = Array.isArray(state?.tabs) ? state.tabs : [];
+                if (tabs.length === 0) {
+                    tablineEl.style.display = "none";
+                    tablineEl.innerHTML = "";
+                    updateOverlayLayout();
+                    return;
+                }
+
+                tablineEl.innerHTML = tabs.map(tab => {
+                    const cls = ["tabitem"];
+                    if (tab.current) cls.push("current");
+                    if (tab.changed) cls.push("modified");
+                    const label = escapeHtml(tab.label || String(tab.index || ""));
+                    const badge = escapeHtml(tabBadge(tab.label || String(tab.index || "")));
+                    return `<span class="${cls.join(" ")}" data-index="${tab.index}"><span class="tabicon">${badge}</span><span class="tablabel">${label}</span><button class="tabclose" data-index="${tab.index}" type="button">x</button></span>`;
+                }).join("");
+                tablineEl.style.display = "block";
+
+                tablineEl.querySelectorAll(".tabitem").forEach(el => {
+                    el.addEventListener("click", (ev) => {
+                        if (ev.target && ev.target.closest(".tabclose")) return;
+                        const index = Number(el.getAttribute("data-index") || 0);
+                        if (index > 0) post({ type: "tabSwitch", index });
+                    });
+                });
+                tablineEl.querySelectorAll(".tabclose").forEach(el => {
+                    el.addEventListener("click", (ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        const index = Number(el.getAttribute("data-index") || 0);
+                        if (index > 0) post({ type: "tabClose", index });
+                    });
+                });
+
+                updateOverlayLayout();
+            }
+
+            function getPopupmenuAnchorPosition(gridId, row, col) {
+                if (gridId === -1 && cmdlineEl && cmdlineEl.style.display !== "none") {
+                    const rect = cmdlineEl.getBoundingClientRect();
+                    return { x: rect.left + col * cellW, y: rect.top + row * cellH };
+                }
+
+                const gs = getGridState(gridId) || getGridState(1) || { x: 0, y: 0 };
+                const rootRect = root.getBoundingClientRect();
+                return {
+                    x: rootRect.left + (gs.x || 0) + col * cellW,
+                    y: rootRect.top + (gs.y || 0) + row * cellH
+                };
+            }
+
+            function renderPopupmenu() {
+                if (!popupmenuEl) return;
+                if (!popupmenuState || !Array.isArray(popupmenuState.items) || popupmenuState.items.length === 0) {
+                    popupmenuEl.style.display = "none";
+                    popupmenuEl.innerHTML = "";
+                    return;
+                }
+
+                popupmenuEl.innerHTML = popupmenuState.items.map((item, index) => {
+                    const cls = index === popupmenuState.selected ? "pumitem selected" : "pumitem";
+                    return `<div class="${cls}"><span>${escapeHtml(item.word || "")}</span><span class="pum-kind">${escapeHtml(item.kind || "")}</span><span class="pum-extra">${escapeHtml(item.menu || "")}</span></div>`;
+                }).join("");
+                popupmenuEl.style.display = "block";
+
+                const anchor = getPopupmenuAnchorPosition(popupmenuState.grid, popupmenuState.row, popupmenuState.col);
+                const desiredLeft = Math.max(0, Math.min(window.innerWidth - popupmenuEl.offsetWidth - 4, anchor.x));
+                let desiredTop = anchor.y + cellH;
+                if (desiredTop + popupmenuEl.offsetHeight > window.innerHeight) {
+                    desiredTop = Math.max(0, anchor.y - popupmenuEl.offsetHeight);
+                }
+
+                popupmenuEl.style.left = `${desiredLeft}px`;
+                popupmenuEl.style.top = `${Math.max(0, desiredTop)}px`;
+                const selectedEl = popupmenuEl.querySelector(".pumitem.selected");
+                if (selectedEl && typeof selectedEl.scrollIntoView === "function") {
+                    selectedEl.scrollIntoView({ block: "nearest" });
+                }
+                const rootRect = root.getBoundingClientRect();
+                post({
+                    type: "pumBounds",
+                    x: desiredLeft,
+                    y: Math.max(0, desiredTop),
+                    width: popupmenuEl.offsetWidth,
+                    height: popupmenuEl.offsetHeight,
+                    pumCol: (desiredLeft - rootRect.left) / Math.max(1, cellW),
+                    pumRow: (Math.max(0, desiredTop) - rootRect.top) / Math.max(1, cellH)
+                });
+            }
+
+            function updateOverlayLayout() {
+                const tablineVisible = !!tablineEl && tablineEl.style.display !== "none" && tablineEl.innerHTML !== "";
+                const cmdlineVisible = !!cmdlineEl && cmdlineEl.style.display !== "none" && cmdlineEl.innerHTML !== "";
+                const cmdblockVisible = !!cmdblockEl && cmdblockEl.style.display !== "none" && cmdblockEl.innerHTML !== "";
+                const rootRect = root.getBoundingClientRect();
+                const overlayLeft = Math.max(0, Math.round(rootRect.left));
+                const overlayWidth = Math.max(1, Math.round(rootRect.width || window.innerWidth));
+
+                const tablineHeight = tablineVisible ? Math.ceil(tablineEl.offsetHeight) : 0;
+                const cmdlineHeight = cmdlineVisible ? Math.ceil(cmdlineEl.offsetHeight) : 0;
+                const cmdblockHeight = cmdblockVisible ? Math.ceil(cmdblockEl.offsetHeight) : 0;
+
+                if (messagesEl) {
+                    messagesEl.style.left = `${overlayLeft}px`;
+                    messagesEl.style.right = "auto";
+                    messagesEl.style.width = `${overlayWidth}px`;
+                    messagesEl.style.maxWidth = `${overlayWidth}px`;
+                }
+                if (cmdlineEl) {
+                    cmdlineEl.style.left = `${overlayLeft}px`;
+                    cmdlineEl.style.right = "auto";
+                    cmdlineEl.style.width = `${overlayWidth}px`;
+                    cmdlineEl.style.maxWidth = `${overlayWidth}px`;
+                }
+                if (cmdblockEl) {
+                    cmdblockEl.style.left = `${overlayLeft}px`;
+                    cmdblockEl.style.right = "auto";
+                    cmdblockEl.style.width = `${overlayWidth}px`;
+                    cmdblockEl.style.maxWidth = `${overlayWidth}px`;
+                }
+                if (cmdlineEl && cmdlineEl.dataset.wrapPrompt !== "1") cmdlineEl.style.height = `${cellH}px`;
+                if (cmdblockEl) cmdblockEl.style.lineHeight = `${cellH}px`;
+                if (cmdlineEl) cmdlineEl.style.bottom = "1px";
+                if (cmdblockEl) cmdblockEl.style.bottom = `${cmdlineHeight + 1}px`;
+
+                const nextTopInset = tablineHeight;
+                if (nextTopInset !== tablineTopInset) {
+                    tablineTopInset = nextTopInset;
+                    root.style.top = `${tablineTopInset}px`;
+                    onResize();
+                }
+                root.style.bottom = "0px";
+                overlayBottomInset = cmdlineHeight + cmdblockHeight;
+
+                updateMessagePosition();
+                renderPopupmenu();
             }
 
             // --- rendering ---
@@ -284,6 +1074,26 @@
                 return { fg, bg };
             }
 
+            function normalizeHexColor(value) {
+                return String(value || "").trim().toLowerCase();
+            }
+
+            function readableFgForBg(bg) {
+                const color = normalizeHexColor(bg);
+                if (!/^#[0-9a-f]{6}$/.test(color)) return defFg;
+                const r = parseInt(color.slice(1, 3), 16);
+                const g = parseInt(color.slice(3, 5), 16);
+                const b = parseInt(color.slice(5, 7), 16);
+                const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+                return luminance > 0.5 ? "#000000" : "#ffffff";
+            }
+
+            function readableFg(fg, bg) {
+                if (normalizeHexColor(fg) !== normalizeHexColor(bg)) return fg || defFg;
+                if (normalizeHexColor(defFg) !== normalizeHexColor(bg)) return defFg;
+                return readableFgForBg(bg);
+            }
+
             function setCtxFont(attrs) {
                 const style = attrs.italic ? "italic" : "normal";
                 const weight = attrs.bold ? "bold" : "normal";
@@ -293,14 +1103,14 @@
             function drawCellText(ch, x, y, fg, attrs) {
                 const baselineY = y + textYOffset;
                 ctx.save();
-                setCtxFont(attrs);
+                setCtxFont(attrs || {});
                 ctx.fillStyle = fg;
                 ctx.fillText(ch, x, baselineY);
                 ctx.restore();
             }
 
             function drawCellDecorations(x, y, width, attrs) {
-                if (!attrs.underline && !attrs.undercurl) return;
+                if (!attrs || (!attrs.underline && !attrs.undercurl)) return;
 
                 const uy = y + cellH - 2;
                 ctx.save();
@@ -342,85 +1152,117 @@
                 ctx.fillStyle = defBg;
                 ctx.fillRect(0, 0, w, h);
 
-                for (let r = 0; r < rows; r++) {
-                    const y = r * cellH;
-                    if (y >= h) continue;
+                const paintGrid = (gs) => {
+                    if (!gs) return;
+                    const gx = Math.round(gs.x || 0);
+                    const gy = Math.round(gs.y || 0);
+                    const visibleCols = Math.max(0, Math.min(gs.cols, gs.outerCols || gs.cols));
+                    const visibleRows = Math.max(0, Math.min(gs.rows, gs.outerRows || gs.rows));
 
-                    // 背景を先に1セルずつ塗る
-                    for (let c = 0; c < cols; c++) {
-                        const x = c * cellW;
-                        if (x >= w) break;
-
-                        const cell = grid[r][c];
-                        const { bg } = getColors(cell.hl);
-
-                        ctx.fillStyle = bg || defBg;
-                        ctx.fillRect(x, y, cellW, cellH);
+                    if (gs.floating && !gs.overlayManaged && visibleCols > 0 && visibleRows > 0) {
+                        let sampleBg = null;
+                        for (let sr = 0; sr < visibleRows && !sampleBg; sr++) {
+                            for (let sc = 0; sc < visibleCols; sc++) {
+                                const sample = gs.cells[sr]?.[sc];
+                                if (!sample) continue;
+                                const colors = getColors(sample.hl);
+                                if (colors.bg && colors.bg !== defBg) {
+                                    sampleBg = colors.bg;
+                                    break;
+                                }
+                            }
+                        }
+                        ctx.fillStyle = sampleBg || defBg;
+                        ctx.fillRect(gx, gy, visibleCols * cellW, visibleRows * cellH);
                     }
 
-                    // 文字は右→左へ描く
-                    // こうすると wide 文字の右半分が次セル背景で消されにくい
-                    for (let c = cols - 1; c >= 0; c--) {
-                        const x = c * cellW;
-                        if (x >= w) continue;
+                    for (let r = 0; r < visibleRows; r++) {
+                        const y = gy + r * cellH;
+                        if (y >= h || y + cellH <= 0) continue;
 
-                        const cell = grid[r][c];
-                        const attrs = getHighlightAttrs(cell.hl);
-                        const ch = cell.ch || "";
+                        for (let c = visibleCols - 1; c >= 0; c--) {
+                            const x = gx + c * cellW;
+                            if (x >= w) continue;
+                            if (x + cellW <= 0) continue;
 
-                        if (!ch || ch === " ") continue;
+                            const cell = gs.cells[r][c];
+                            const { bg } = getColors(cell.hl);
 
-                        drawCellText(ch, x, y, attrs.fg || defFg, attrs);
-                        drawCellDecorations(x, y, cellW, attrs);
+                            ctx.fillStyle = bg || defBg;
+                            ctx.fillRect(x, y, cellW, cellH);
+                        }
+
+                        for (let c = 0; c < visibleCols; c++) {
+                            const x = gx + c * cellW;
+                            if (x >= w) break;
+                            if (x + cellW <= 0) continue;
+
+                            const cell = gs.cells[r][c];
+                            const attrs = getHighlightAttrs(cell.hl);
+                            const { bg } = getColors(cell.hl);
+                            const ch = cell.ch || "";
+
+                            if (!ch || ch === " ") continue;
+
+                            drawCellText(ch, x, y, readableFg(attrs.fg, bg), attrs);
+                            drawCellDecorations(x, y, cellW, attrs);
+                        }
                     }
+                };
+
+                for (const gs of eachVisibleGridInPaintOrder()) {
+                    paintGrid(gs);
                 }
 
-                const cx = cursor.c * cellW;
-                const cy = cursor.r * cellH;
-                if (cx < w && cy < h && cursor.r >= 0 && cursor.r < rows && cursor.c >= 0 && cursor.c < cols) {
-                    const cell = grid[cursor.r][cursor.c] || { ch: " ", hl: 0, cont: false };
-                    const attrs = getHighlightAttrs(cell.hl);
-                    const ch = cell.ch || " ";
+                const cgs = getGridState(cursor.grid || 1) || getGridState(1);
+                if (cgs && cursorVisible) {
+                    const cx = Math.round((cgs.x || 0) + cursor.c * cellW);
+                    const cy = Math.round((cgs.y || 0) + cursor.r * cellH);
 
-                    let cursorW = cellW;
-                    if (ch && ch !== " ") {
-                        const measuredW = ctx.measureText(ch).width;
-                        cursorW = Math.max(cellW, Math.min(Math.ceil(measuredW), cellW * 2));
-                    }
-                    cursorW = Math.min(cursorW, w - cx);
+                    if (cx < w && cy < h && cursor.r >= 0 && cursor.r < cgs.rows && cursor.c >= 0 && cursor.c < cgs.cols) {
+                        const cell = cgs.cells[cursor.r][cursor.c] || { ch: " ", hl: 0, cont: false };
+                        const attrs = getHighlightAttrs(cell.hl);
+                        const ch = cell.ch || " ";
 
-                    if (currentCursorShape === "vertical") {
-                        const cw = Math.max(1, Math.round((cellW * currentCellPercentage) / 100));
-                        ctx.fillStyle = attrs.fg || defFg;
-                        ctx.fillRect(cx, cy, cw, cellH);
-
-                        if (ch !== " ") {
-                            drawCellText(ch, cx, cy, attrs.fg || defFg, attrs);
-                            drawCellDecorations(cx, cy, cursorW, attrs);
+                        let cursorW = cellW;
+                        if (ch && ch !== " ") {
+                            const measuredW = ctx.measureText(ch).width;
+                            cursorW = Math.max(cellW, Math.min(Math.ceil(measuredW), cellW * 2));
                         }
-                    } else if (currentCursorShape === "horizontal") {
-                        const chh = Math.max(1, Math.round((cellH * currentCellPercentage) / 100));
-                        ctx.fillStyle = attrs.fg || defFg;
-                        ctx.fillRect(cx, cy + (cellH - chh), cursorW, chh);
+                        cursorW = Math.min(cursorW, w - cx);
 
-                        if (ch !== " ") {
-                            drawCellText(ch, cx, cy, attrs.fg || defFg, attrs);
-                            drawCellDecorations(cx, cy, cursorW, attrs);
-                        }
-                    } else {
-                        // block cursor
-                        ctx.fillStyle = attrs.fg || defFg;
-                        ctx.fillRect(cx, cy, cursorW, cellH);
+                        if (currentCursorShape === "vertical") {
+                            const cw = Math.max(1, Math.round((cellW * currentCellPercentage) / 100));
+                            ctx.fillStyle = attrs.fg || defFg;
+                            ctx.fillRect(cx, cy, cw, cellH);
 
-                        if (ch !== " ") {
-                            const cursorAttrs = {
-                                ...attrs,
-                                fg: attrs.bg || defBg,
-                                bg: attrs.fg || defFg,
-                                special: attrs.special || attrs.bg || defBg
-                            };
-                            drawCellText(ch, cx, cy, cursorAttrs.fg || defBg, cursorAttrs);
-                            drawCellDecorations(cx, cy, cursorW, cursorAttrs);
+                            if (ch !== " ") {
+                                drawCellText(ch, cx, cy, attrs.fg || defFg, attrs);
+                                drawCellDecorations(cx, cy, cursorW, attrs);
+                            }
+                        } else if (currentCursorShape === "horizontal") {
+                            const chh = Math.max(1, Math.round((cellH * currentCellPercentage) / 100));
+                            ctx.fillStyle = attrs.fg || defFg;
+                            ctx.fillRect(cx, cy + (cellH - chh), cursorW, chh);
+
+                            if (ch !== " ") {
+                                drawCellText(ch, cx, cy, attrs.fg || defFg, attrs);
+                                drawCellDecorations(cx, cy, cursorW, attrs);
+                            }
+                        } else {
+                            ctx.fillStyle = attrs.fg || defFg;
+                            ctx.fillRect(cx, cy, cursorW, cellH);
+
+                            if (ch !== " ") {
+                                const cursorAttrs = {
+                                    ...attrs,
+                                    fg: attrs.bg || defBg,
+                                    bg: attrs.fg || defFg,
+                                    special: attrs.special || attrs.bg || defBg
+                                };
+                                drawCellText(ch, cx, cy, cursorAttrs.fg || defBg, cursorAttrs);
+                                drawCellDecorations(cx, cy, cursorW, cursorAttrs);
+                            }
                         }
                     }
                 }
@@ -439,8 +1281,9 @@
             }
 
             function syncImePosition() {
-                const x = Math.max(0, Math.min(root.clientWidth - cellW, cursor.c * cellW));
-                const y = Math.max(0, Math.min(root.clientHeight - cellH, cursor.r * cellH));
+                const cgs = getGridState(cursor.grid || 1) || getGridState(1) || { x: 0, y: 0 };
+                const x = Math.max(0, Math.min(root.clientWidth - cellW, (cgs.x || 0) + cursor.c * cellW));
+                const y = Math.max(0, Math.min(root.clientHeight - cellH, (cgs.y || 0) + cursor.r * cellH));
 
                 const composingText = ime.value || "";
                 const measured = composingText ? ctx.measureText(composingText).width : 0;
@@ -513,13 +1356,26 @@
 
             function eventToGridPos(e) {
                 const rect = cv.getBoundingClientRect();
-                const x = Math.max(0, e.clientX - rect.left);
-                const y = Math.max(0, e.clientY - rect.top);
+                const px = Math.max(0, e.clientX - rect.left);
+                const py = Math.max(0, e.clientY - rect.top);
 
-                const col = Math.max(0, Math.min(cols - 1, Math.floor(x / cellW)));
-                const row = Math.max(0, Math.min(rows - 1, Math.floor(y / cellH)));
+                const ordered = eachVisibleGridInPaintOrder().slice().sort((a, b) => (b.z || 0) - (a.z || 0));
+                for (const gs of ordered) {
+                    const gx = gs.x || 0;
+                    const gy = gs.y || 0;
+                    const gw = Math.max(0, Math.min(gs.cols, gs.outerCols || gs.cols)) * cellW;
+                    const gh = Math.max(0, Math.min(gs.rows, gs.outerRows || gs.rows)) * cellH;
 
-                return { grid: 0, row, col };
+                    if (px >= gx && px < gx + gw && py >= gy && py < gy + gh) {
+                        const col = Math.max(0, Math.min(gs.cols - 1, Math.floor((px - gx) / cellW)));
+                        const row = Math.max(0, Math.min(gs.rows - 1, Math.floor((py - gy) / cellH)));
+                        return { grid: gs.id, row, col };
+                    }
+                }
+
+                const col = Math.max(0, Math.min(cols - 1, Math.floor(px / cellW)));
+                const row = Math.max(0, Math.min(rows - 1, Math.floor(py / cellH)));
+                return { grid: 1, row, col };
             }
 
             function postMouse(button, action, e) {
@@ -558,6 +1414,7 @@
 
                     switch (name) {
                         case "default_colors_set": {
+                            deferredPaintNeeded = true;
                             for (const item of args) {
                                 const a = normalizeArg(item);
                                 const fg = rgbIntToHex(a[0]);
@@ -571,14 +1428,11 @@
                             document.documentElement.style.setProperty("--fg", defFg);
                             root.style.backgroundColor = defBg;
                             post({ type: "colors", bg: defBg, fg: defFg });
-
-                            markAllDirty();
-                            ctx.fillStyle = defBg;
-                            ctx.fillRect(0, 0, root.clientWidth, root.clientHeight);
                             break;
                         }
 
                         case "hl_attr_define": {
+                            deferredPaintNeeded = true;
                             for (const item of args) {
                                 const a = normalizeArg(item);
                                 const id = a[0];
@@ -593,59 +1447,56 @@
                                 const underline = !!rgbAttrs.underline;
                                 const undercurl = !!rgbAttrs.undercurl;
 
-                                hl.set(id, {
-                                    fg,
-                                    bg,
-                                    reverse,
-                                    bold,
-                                    italic,
-                                    underline,
-                                    undercurl,
-                                    special: sp
-                                });
+                                hl.set(id, { fg, bg, reverse, bold, italic, underline, undercurl, special: sp });
                             }
                             break;
                         }
 
                         case "grid_resize": {
+                            deferredPaintNeeded = true;
                             for (const item of args) {
                                 const a = normalizeArg(item);
                                 if (a.length < 3) continue;
-                                if (a[0] !== 1) continue;
-                                allocGrid(a[1], a[2]);
+                                allocGrid(a[1], a[2], a[0]);
                             }
                             break;
                         }
 
                         case "grid_clear": {
+                            deferredPaintNeeded = true;
                             for (const item of args) {
                                 const a = normalizeArg(item);
-                                if (a[0] === 1) clearGrid();
+                                clearGrid(a[0]);
                             }
                             break;
                         }
 
                         case "grid_cursor_goto": {
+                            deferredPaintNeeded = true;
                             for (const item of args) {
                                 const a = normalizeArg(item);
                                 if (a.length < 3) continue;
-                                if (a[0] !== 1) continue;
+                                const oldGrid = cursor.grid || 1;
                                 const oldR = cursor.r;
+                                cursor.grid = a[0];
                                 cursor.r = a[1];
                                 cursor.c = a[2];
-                                markDirtyRow(oldR);
-                                markDirtyRow(cursor.r);
+                                markDirtyRow(oldR, oldGrid);
+                                markDirtyRow(cursor.r, cursor.grid);
                                 syncImePosition();
                             }
                             break;
                         }
 
                         case "grid_scroll": {
+                            deferredPaintNeeded = true;
                             for (const item of args) {
                                 const a = normalizeArg(item);
                                 if (a.length < 7) continue;
-                                if (a[0] !== 1) continue;
 
+                                const gridId = a[0];
+                                const gs = getGridState(gridId);
+                                if (!gs) continue;
                                 const top = a[1];
                                 const bot = a[2];
                                 const left = a[3];
@@ -655,7 +1506,7 @@
                                 const delta = rowsDelta;
 
                                 if (colsDelta !== 0) {
-                                    markAllDirty();
+                                    markAllDirty(gridId);
                                     continue;
                                 }
                                 if (delta === 0) continue;
@@ -663,51 +1514,56 @@
                                 if (delta > 0) {
                                     for (let r = top; r < bot - delta; r++) {
                                         for (let c = left; c < right; c++) {
-                                            const src = grid[r + delta][c];
-                                            grid[r][c] = { ch: src.ch, hl: src.hl, cont: !!src.cont };
+                                            const src = gs.cells[r + delta][c];
+                                            gs.cells[r][c] = { ch: src.ch, hl: src.hl, cont: !!src.cont };
                                         }
                                     }
                                     for (let r = bot - delta; r < bot; r++) {
                                         for (let c = left; c < right; c++) {
-                                            grid[r][c] = { ch: " ", hl: 0, cont: false };
+                                            gs.cells[r][c] = { ch: " ", hl: 0, cont: false };
                                         }
                                     }
                                 } else {
                                     const d = -delta;
                                     for (let r = bot - 1; r >= top + d; r--) {
                                         for (let c = left; c < right; c++) {
-                                            const src = grid[r - d][c];
-                                            grid[r][c] = { ch: src.ch, hl: src.hl, cont: !!src.cont };
+                                            const src = gs.cells[r - d][c];
+                                            gs.cells[r][c] = { ch: src.ch, hl: src.hl, cont: !!src.cont };
                                         }
                                     }
                                     for (let r = top; r < top + d; r++) {
                                         for (let c = left; c < right; c++) {
-                                            grid[r][c] = { ch: " ", hl: 0, cont: false };
+                                            gs.cells[r][c] = { ch: " ", hl: 0, cont: false };
                                         }
                                     }
                                 }
 
-                                markAllDirty();
+                                markAllDirty(gridId);
                             }
                             break;
                         }
 
                         case "grid_line": {
+                            deferredPaintNeeded = true;
                             for (const item of args) {
                                 const a = normalizeArg(item);
                                 if (a.length < 4) continue;
-                                if (a[0] !== 1) continue;
+
+                                const gridId = a[0];
+                                const gs = getGridState(gridId);
+                                if (!gs) continue;
 
                                 const row = a[1];
                                 const colStart = a[2];
-                                markDirtyRow(row);
+                                markDirtyRow(row, gridId);
 
                                 const cells = a[3];
                                 if (!Array.isArray(cells)) continue;
-                                if (row < 0 || row >= rows) continue;
+                                if (row < 0 || row >= gs.rows) continue;
 
                                 let col = colStart;
-                                let lastHl = (colStart > 0 && colStart - 1 < cols) ? grid[row][colStart - 1].hl : 0;
+                                let lastHl = (colStart > 0 && colStart - 1 < gs.cols) ? gs.cells[row][colStart - 1].hl : 0;
+                                let debugText = "";
 
                                 for (const cell of cells) {
                                     if (!Array.isArray(cell) || cell.length < 1) continue;
@@ -718,29 +1574,577 @@
 
                                     lastHl = hlId;
                                     const chars = [...text];
+                                    debugText += text.repeat(Math.max(1, Number(repeat) || 1));
 
                                     for (let rep = 0; rep < repeat; rep++) {
                                         if (chars.length === 0) {
-                                            if (col >= 0 && col < cols) {
-                                                grid[row][col].ch = " ";
-                                                grid[row][col].hl = hlId;
-                                                grid[row][col].cont = false;
+                                            if (col >= 0 && col < gs.cols) {
+                                                gs.cells[row][col].ch = " ";
+                                                gs.cells[row][col].hl = hlId;
+                                                gs.cells[row][col].cont = false;
                                             }
                                             col++;
                                             continue;
                                         }
 
                                         for (let i = 0; i < chars.length; i++) {
-                                            if (col >= 0 && col < cols) {
-                                                grid[row][col].ch = chars[i];
-                                                grid[row][col].hl = hlId;
-                                                grid[row][col].cont = false;
+                                            if (col >= 0 && col < gs.cols) {
+                                                gs.cells[row][col].ch = chars[i];
+                                                gs.cells[row][col].hl = hlId;
+                                                gs.cells[row][col].cont = false;
                                             }
                                             col++;
                                         }
                                     }
                                 }
+                                if (shouldDebugFloatGridLine(gs, debugText)) {
+                                    debugEvent("float_grid_line", {
+                                        gridId,
+                                        row,
+                                        colStart,
+                                        cols: gs.cols,
+                                        rows: gs.rows,
+                                        screenRow: gs.screenRow,
+                                        screenCol: gs.screenCol,
+                                        text: debugText,
+                                        raw: cells
+                                    });
+                                }
                             }
+                            break;
+                        }
+
+
+                        case "win_pos": {
+                            deferredPaintNeeded = true;
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                if (a.length < 6) continue;
+                                const gridId = a[0];
+                                const winrow = Number(a[2] ?? 0);
+                                const wincol = Number(a[3] ?? 0);
+                                const width = Number(a[4] ?? 0);
+                                const height = Number(a[5] ?? 0);
+                                const gs = getGridState(gridId, true);
+                                gs.x = wincol * cellW;
+                                gs.y = winrow * cellH;
+                                gs.outerCols = width > 0 ? width : gs.cols;
+                                gs.outerRows = height > 0 ? height : gs.rows;
+                                gs.z = gridId === 1 ? 0 : 100 + gridId;
+                                gs.visible = true;
+                                gs.floating = false;
+                                debugEvent("win_pos", { gridId, winrow, wincol, width, height, cols: gs.cols, rows: gs.rows });
+                            }
+                            break;
+                        }
+
+                        case "win_viewport": {
+                            deferredPaintNeeded = true;
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                if (a.length < 7) continue;
+                                const gridId = a[0];
+                                const gs = getGridState(gridId, true);
+                                const scrollDelta = Number(a[7] ?? 0);
+                                const prevViewport = gs.viewport;
+                                gs.viewport = {
+                                    win: a[1],
+                                    topline: Number(a[2] ?? 0),
+                                    botline: Number(a[3] ?? 0),
+                                    curline: Number(a[4] ?? 0),
+                                    curcol: Number(a[5] ?? 0),
+                                    lineCount: Number(a[6] ?? 0),
+                                    scrollDelta
+                                };
+                                if (scrollDelta !== 0) markAllDirty(gridId);
+                                if (scrollDelta !== 0 || prevViewport?.topline !== gs.viewport.topline || prevViewport?.botline !== gs.viewport.botline) {
+                                    debugEvent("win_viewport", {
+                                        gridId,
+                                        topline: gs.viewport.topline,
+                                        botline: gs.viewport.botline,
+                                        curline: gs.viewport.curline,
+                                        curcol: gs.viewport.curcol,
+                                        lineCount: gs.viewport.lineCount,
+                                        scrollDelta
+                                    });
+                                }
+                            }
+                            break;
+                        }
+
+                        case "win_viewport_margins": {
+                            deferredPaintNeeded = true;
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                if (a.length < 6) continue;
+                                const gridId = a[0];
+                                const gs = getGridState(gridId, true);
+                                const prevMargins = gs.viewportMargins || {};
+                                gs.viewportMargins = {
+                                    top: Number(a[2] ?? 0),
+                                    bottom: Number(a[3] ?? 0),
+                                    left: Number(a[4] ?? 0),
+                                    right: Number(a[5] ?? 0)
+                                };
+                                markAllDirty(gridId);
+                                if (prevMargins.top !== gs.viewportMargins.top
+                                    || prevMargins.bottom !== gs.viewportMargins.bottom
+                                    || prevMargins.left !== gs.viewportMargins.left
+                                    || prevMargins.right !== gs.viewportMargins.right) {
+                                    debugEvent("win_viewport_margins", {
+                                        gridId,
+                                        ...gs.viewportMargins
+                                    });
+                                }
+                            }
+                            break;
+                        }
+
+                        case "win_float_pos": {
+                            deferredPaintNeeded = true;
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                if (a.length < 8) continue;
+                                const gridId = a[0];
+                                const anchor = String(a[2] ?? "");
+                                const anchorGrid = Number(a[3] ?? 1);
+                                const anchorRow = Number(a[4] ?? 0);
+                                const anchorCol = Number(a[5] ?? 0);
+                                const focusable = !!a[6];
+                                const zindex = Number(a[7] ?? 50);
+                                const compindex = Number(a[8] ?? 0);
+                                const screenRow = Number(a[9] ?? Number.NaN);
+                                const screenCol = Number(a[10] ?? Number.NaN);
+                                const gs = getGridState(gridId, true);
+                                const ag = getGridState(anchorGrid, true);
+
+                                let x;
+                                let y;
+
+                                if (Number.isFinite(screenRow) && Number.isFinite(screenCol)) {
+                                    x = screenCol * cellW;
+                                    y = screenRow * cellH;
+                                } else {
+                                    x = (ag?.x || 0) + anchorCol * cellW;
+                                    y = (ag?.y || 0) + anchorRow * cellH;
+
+                                    if (anchor.includes("S")) y -= gs.rows * cellH;
+                                    if (anchor.includes("E")) x -= gs.cols * cellW;
+                                }
+
+                                gs.x = x;
+                                gs.y = y;
+                                gs.outerCols = gs.cols;
+                                gs.outerRows = gs.rows;
+                                gs.z = 1000 + zindex + compindex;
+                                gs.visible = true;
+                                gs.floating = true;
+                                gs.focusable = focusable;
+                                gs.screenRow = screenRow;
+                                gs.screenCol = screenCol;
+                                gs.overlayManaged = isOverlayManagedFloat(gs);
+                                debugEvent("win_float_pos", {
+                                    raw: a,
+                                    gridId,
+                                    x,
+                                    y,
+                                    anchor,
+                                    anchorGrid,
+                                    anchorRow,
+                                    anchorCol,
+                                    focusable,
+                                    overlayManaged: gs.overlayManaged,
+                                    zindex,
+                                    compindex,
+                                    screenRow,
+                                    screenCol,
+                                    cols: gs.cols,
+                                    rows: gs.rows
+                                });
+                            }
+                            break;
+                        }
+
+                        case "win_hide": {
+                            deferredPaintNeeded = true;
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const gs = getGridState(a[0]);
+                                if (gs && gs.id !== 1) gs.visible = false;
+                                debugEvent("win_hide", { gridId: a[0] });
+                            }
+                            break;
+                        }
+
+                        case "win_external_pos": {
+                            deferredPaintNeeded = true;
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const gs = getGridState(a[0], true);
+                                gs.visible = true;
+                                gs.floating = true;
+                                gs.z = 2000 + gs.id;
+                            }
+                            break;
+                        }
+
+                        case "win_close":
+                        case "grid_destroy": {
+                            deferredPaintNeeded = true;
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const gridId = a[0];
+                                debugEvent("grid_destroy", { gridId });
+                                if (gridId !== 1) grids.delete(gridId);
+                            }
+                            break;
+                        }
+
+                        case "msg_show": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const kind = String(a[0] ?? "");
+                                const content = normalizeMessageContent(kind, chunksToText(a[1]));
+                                const replaceLast = !!a[2];
+                                const append = !!a[4];
+                                const id = a[5] == null ? null : String(a[5]);
+
+                                if (kind === "empty" && !content) {
+                                    messageLines = [];
+                                    continue;
+                                }
+
+                                if (/ATTENTION|swap|E325/i.test(content) || kind === "emsg" || kind === "echoerr") {
+                                    debugEvent("msg_show", {
+                                        raw: a,
+                                        kind,
+                                        content,
+                                        replaceLast,
+                                        append,
+                                        id
+                                    });
+                                }
+
+                                if (kind === "confirm" && isSwapfileConfirmText(content)) {
+                                    clearTransientMessageTimer();
+                                    messageLines = [{
+                                        id: id ?? "confirm",
+                                        text: content,
+                                        kind,
+                                        transient: false
+                                    }];
+                                } else if (id) {
+                                    const idx = messageLines.findIndex(line => line && typeof line === "object" && line.id === id);
+                                    if (idx >= 0) {
+                                        const prevText = messageLines[idx].text || "";
+                                        messageLines[idx] = {
+                                            ...messageLines[idx],
+                                            id,
+                                            text: append ? prevText + content : content,
+                                            kind,
+                                            transient: kind === "emsg" || kind === "echoerr"
+                                        };
+                                    } else {
+                                        messageLines.push({
+                                            id,
+                                            text: content,
+                                            kind,
+                                            transient: kind === "emsg" || kind === "echoerr"
+                                        });
+                                    }
+                                } else if (replaceLast && messageLines.length > 0 && cmdlines.size === 0) {
+                                    const prev = messageLines[messageLines.length - 1];
+                                    const prevText = prev && typeof prev === "object" ? prev.text || "" : String(prev ?? "");
+                                    messageLines[messageLines.length - 1] = {
+                                        id: null,
+                                        text: append ? prevText + content : content,
+                                        kind,
+                                        transient: kind === "emsg" || kind === "echoerr"
+                                    };
+                                } else {
+                                    messageLines.push({
+                                        id: null,
+                                        text: content,
+                                        kind,
+                                        transient: kind === "emsg" || kind === "echoerr"
+                                    });
+                                }
+                                if (kind === "return_prompt") {
+                                    messageLines.push({ id: null, text: "", kind, transient: false });
+                                }
+                            }
+                            scheduleTransientMessageClear();
+                            refreshMessages();
+                            break;
+                        }
+
+                        case "msg_set_pos": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                msgGridId = Number(a[0] ?? 0);
+                                msgGridRow = Number(a[1] ?? 0);
+                                debugEvent("msg_set_pos", { raw: a, gridId: msgGridId, row: msgGridRow });
+                            }
+                            updateMessagePosition();
+                            break;
+                        }
+
+                        case "msg_clear": {
+                            clearTransientMessageTimer();
+                            messageLines = [];
+                            msgShowmode = "";
+                            msgShowcmd = "";
+                            msgRuler = "";
+                            msgGridId = null;
+                            msgGridRow = null;
+                            refreshMessages();
+                            break;
+                        }
+
+                        case "msg_showmode": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                msgShowmode = chunksToText(a[0]);
+                                debugEvent("msg_showmode", { raw: a, text: msgShowmode });
+                            }
+                            refreshMessages();
+                            break;
+                        }
+
+                        case "msg_showcmd": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                msgShowcmd = chunksToText(a[0]);
+                                debugEvent("msg_showcmd", { raw: a, text: msgShowcmd });
+                            }
+                            if (msgShowcmd) clearTransientMessages();
+                            refreshMessages();
+                            break;
+                        }
+
+                        case "msg_ruler": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                msgRuler = chunksToText(a[0]);
+                            }
+                            refreshMessages();
+                            break;
+                        }
+
+                        case "msg_history_clear": {
+                            clearTransientMessageTimer();
+                            messageLines = [];
+                            msgShowmode = "";
+                            msgShowcmd = "";
+                            msgRuler = "";
+                            msgGridId = null;
+                            msgGridRow = null;
+                            refreshMessages();
+                            break;
+                        }
+
+                        case "msg_history_show": {
+                            const nextLines = [];
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const entries = Array.isArray(a[0]) ? a[0] : [];
+                                for (const entry of entries) {
+                                    const e = normalizeArg(entry);
+                                    const kind = String(e[0] ?? "");
+                                    const text = chunksToText(e[1]);
+                                    const append = !!e[2];
+                                    if (append && nextLines.length > 0) {
+                                        nextLines[nextLines.length - 1] = {
+                                            id: null,
+                                            text: `${nextLines[nextLines.length - 1].text || ""}${text}`
+                                        };
+                                    } else {
+                                        nextLines.push({
+                                            id: null,
+                                            text: kind ? `[${kind}] ${text}` : text
+                                        });
+                                    }
+                                }
+                            }
+                            messageLines = nextLines;
+                            clearTransientMessageTimer();
+                            refreshMessages();
+                            break;
+                        }
+
+                        case "cmdline_show": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const level = Number(a[5] ?? 1);
+                                msgShowcmd = "";
+                                clearTransientMessages();
+                                cmdlines.set(level, {
+                                    text: chunksToText(a[0]),
+                                    pos: Number(a[1] ?? 0),
+                                    firstc: String(a[2] ?? ""),
+                                    prompt: String(a[3] ?? ""),
+                                    indent: Number(a[4] ?? 0),
+                                    specialChar: "",
+                                    specialShift: true
+                                });
+                                debugEvent("cmdline_show", { raw: a, level, text: chunksToText(a[0]) });
+                                renderCmdline(level);
+                            }
+                            break;
+                        }
+
+                        case "cmdline_pos": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const level = Number(a[1] ?? 1);
+                                const state = cmdlines.get(level);
+                                if (!state) continue;
+                                state.pos = Number(a[0] ?? 0);
+                                renderCmdline(level);
+                            }
+                            break;
+                        }
+
+                        case "cmdline_special_char": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const level = Number(a[2] ?? 1);
+                                const state = cmdlines.get(level);
+                                if (!state) continue;
+                                state.specialChar = String(a[0] ?? "");
+                                state.specialShift = !!a[1];
+                                renderCmdline(level);
+                            }
+                            break;
+                        }
+
+                        case "cmdline_hide": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const level = Number(a[0] ?? 1);
+                                const prev = cmdlines.get(level);
+                                debugEvent("cmdline_hide", { raw: a, level });
+                                cmdlines.delete(level);
+                                if (prev && !prev.firstc && prev.prompt) {
+                                    clearTransientMessageTimer();
+                                    messageLines = [];
+                                    msgShowmode = "";
+                                    msgShowcmd = "";
+                                    msgRuler = "";
+                                }
+                            }
+                            renderCmdline();
+                            refreshMessages();
+                            break;
+                        }
+
+                        case "popupmenu_show": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const items = Array.isArray(a[0]) ? a[0] : [];
+                                popupmenuState = {
+                                    items: items.map(entry => {
+                                        const e = normalizeArg(entry);
+                                        return {
+                                            word: String(e[0] ?? ""),
+                                            kind: String(e[1] ?? ""),
+                                            menu: String(e[2] ?? ""),
+                                            info: String(e[3] ?? "")
+                                        };
+                                    }),
+                                    selected: Number(a[1] ?? -1),
+                                    row: Number(a[2] ?? 0),
+                                    col: Number(a[3] ?? 0),
+                                    grid: Number(a[4] ?? 1)
+                                };
+                                debugEvent("popupmenu_show", {
+                                    raw: a,
+                                    selected: popupmenuState.selected,
+                                    row: popupmenuState.row,
+                                    col: popupmenuState.col,
+                                    grid: popupmenuState.grid,
+                                    items: popupmenuState.items.length
+                                });
+                            }
+                            renderPopupmenu();
+                            break;
+                        }
+
+                        case "popupmenu_select": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                if (popupmenuState) popupmenuState.selected = Number(a[0] ?? -1);
+                            }
+                            renderPopupmenu();
+                            break;
+                        }
+
+                        case "popupmenu_hide": {
+                            popupmenuState = null;
+                            renderPopupmenu();
+                            break;
+                        }
+
+                        case "tabline_update": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                const current = stableKey(a[0]);
+                                const tabs = Array.isArray(a[1]) ? a[1] : [];
+                                const currentBuffer = stableKey(a[2]);
+                                const buffers = Array.isArray(a[3]) ? a[3] : [];
+                                const byBuf = new Map(buffers.map(buf => {
+                                    const b = normalizeArg(buf);
+                                    const entry = b[0] && typeof b[0] === "object" ? b[0] : null;
+                                    const key = stableKey(entry?.buffer ?? b[0]);
+                                    return [key, {
+                                        name: String(entry?.name ?? b[1] ?? ""),
+                                        changed: !!(entry?.changed ?? b[2])
+                                    }];
+                                }));
+
+                                renderTabline({
+                                    tabs: tabs.map((tab, index) => {
+                                        const t = normalizeArg(tab);
+                                        const entry = t[0] && typeof t[0] === "object" ? t[0] : null;
+                                        const tabKey = stableKey(entry?.tab ?? t[0]);
+                                        const explicitName = String(entry?.name ?? t[1] ?? "");
+                                        const bufKey = tabKey === current ? currentBuffer : "";
+                                        const info = byBuf.get(bufKey);
+                                        return {
+                                            index: index + 1,
+                                            current: tabKey === current,
+                                            changed: !!info?.changed,
+                                            label: explicitName || info?.name || `tab ${index + 1}`
+                                        };
+                                    })
+                                });
+                            }
+                            break;
+                        }
+
+                        case "cmdline_block_show": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                cmdlineBlock = Array.isArray(a[0])
+                                    ? a[0].map(line => chunksToText(line))
+                                    : [];
+                            }
+                            refreshCmdlineBlock();
+                            break;
+                        }
+
+                        case "cmdline_block_append": {
+                            for (const item of args) {
+                                const a = normalizeArg(item);
+                                cmdlineBlock.push(chunksToText(a[0]));
+                            }
+                            refreshCmdlineBlock();
+                            break;
+                        }
+
+                        case "cmdline_block_hide": {
+                            cmdlineBlock = [];
+                            refreshCmdlineBlock();
                             break;
                         }
 
@@ -751,6 +2155,7 @@
                         }
 
                         case "mode_info_set": {
+                            deferredPaintNeeded = true;
                             for (const item of args) {
                                 const a = normalizeArg(item);
                                 const enabled = !!a[0];
@@ -765,6 +2170,7 @@
                         }
 
                         case "option_set": {
+                            deferredPaintNeeded = true;
                             for (const item of args) {
                                 const a = normalizeArg(item);
                                 const optName = String(a[0] ?? "");
@@ -778,12 +2184,54 @@
                         }
 
                         case "mode_change": {
+                            deferredPaintNeeded = true;
                             for (const item of args) {
                                 const a = normalizeArg(item);
                                 const modeName = String(a[0] ?? currentModeName);
                                 currentModeName = modeName;
+                                if (modeName.startsWith("cmdline")) {
+                                    msgShowcmd = "";
+                                } else {
+                                    clearTransientMessages();
+                                    if (cmdlines.size > 0) {
+                                        cmdlines.clear();
+                                    }
+                                    if (cmdlineBlock.length > 0) {
+                                        cmdlineBlock = [];
+                                    }
+                                    if (messageLines.length > 0 && !msgGridId) {
+                                        messageLines = [];
+                                    }
+                                    msgShowcmd = "";
+                                    msgRuler = "";
+                                }
+                                debugEvent("mode_change", { raw: a, modeName });
                                 applyModeCursor(modeName);
                                 notifyImeOffIfNeeded(modeName);
+                            }
+                            renderCmdline();
+                            refreshCmdlineBlock();
+                            refreshMessages();
+                            break;
+                        }
+
+                        case "busy_start": {
+                            cursorVisible = false;
+                            deferredPaintNeeded = true;
+                            break;
+                        }
+
+                        case "busy_stop": {
+                            cursorVisible = true;
+                            deferredPaintNeeded = true;
+                            break;
+                        }
+
+                        case "flush": {
+                            if (deferredPaintNeeded) {
+                                markAllDirty();
+                                schedulePaint();
+                                deferredPaintNeeded = false;
                             }
                             break;
                         }
@@ -792,9 +2240,6 @@
                             break;
                     }
                 }
-
-                markAllDirty();
-                schedulePaint();
             }
 
             // --- input ---
@@ -976,7 +2421,7 @@
                 updateMetrics();
                 const cr = calcColsRows();
                 if (cr.cols !== cols || cr.rows !== rows) {
-                    allocGrid(cr.cols, cr.rows);
+                    allocGrid(cr.cols, cr.rows, 1);
                     post({ type: "resize", cols: cr.cols, rows: cr.rows });
                 }
                 schedulePaint();
@@ -985,7 +2430,7 @@
             // start
             updateMetrics();
             const cr = calcColsRows();
-            allocGrid(cr.cols, cr.rows);
+            allocGrid(cr.cols, cr.rows, 1);
             schedulePaint();
             post({ type: "ready", cols: cr.cols, rows: cr.rows });
             setTimeout(() => {

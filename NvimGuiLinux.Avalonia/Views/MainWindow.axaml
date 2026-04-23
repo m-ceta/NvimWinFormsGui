@@ -5,9 +5,21 @@
         xmlns:models="clr-namespace:NvimGuiCommon.Explorer;assembly=NvimGuiCommon"
         x:Class="NvimGuiLinux.Avalonia.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
-        Width="1200" Height="800" Title="Nvim Linux GUI">
-  <DockPanel>
-    <Menu DockPanel.Dock="Top">
+        Width="1100" Height="750"
+        MinWidth="700" MinHeight="520"
+        Background="#f3f3f3"
+        Title="Nvim Linux GUI">
+  <DockPanel Background="#f3f3f3">
+    <Menu DockPanel.Dock="Top" Background="#f3f3f3" Foreground="#1f1f1f">
+      <Menu.Styles>
+        <Style Selector="MenuItem">
+          <Setter Property="MinHeight" Value="18" />
+          <Setter Property="Padding" Value="6,1" />
+          <Setter Property="Margin" Value="0" />
+          <Setter Property="FontSize" Value="14" />
+          <Setter Property="FontFamily" Value="monospace" />
+        </Style>
+      </Menu.Styles>
       <MenuItem Header="_File">
         <MenuItem Header="Open selected" Command="{Binding OpenSelectedCommand}" />
         <MenuItem Header="Save" Command="{Binding SaveCommand}" />
@@ -19,16 +31,52 @@
       </MenuItem>
     </Menu>
 
-    <TextBlock DockPanel.Dock="Bottom" Margin="8,4" Text="{Binding StatusText}" />
+    <Border DockPanel.Dock="Bottom" Background="#007acc" MinHeight="24">
+      <TextBlock Margin="8,2"
+                 VerticalAlignment="Center"
+                 Foreground="#ffffff"
+                 FontSize="12"
+                 Text="{Binding StatusText}" />
+    </Border>
 
-    <Grid ColumnDefinitions="280,5,*">
-      <Border Grid.Column="0" BorderBrush="Gray" BorderThickness="0,0,1,0">
-        <TreeView ItemsSource="{Binding Roots}" SelectionChanged="TreeView_OnSelectionChanged">
+    <Grid ColumnDefinitions="275,5,*" Background="#f3f3f3">
+      <Border Grid.Column="0"
+              Background="#fafafa"
+              BorderBrush="#d0d0d0"
+              BorderThickness="0,0,1,0"
+              Padding="4">
+        <TreeView ItemsSource="{Binding Roots}"
+                  Background="#fafafa"
+                  Foreground="#1f1f1f"
+                  SelectionChanged="TreeView_OnSelectionChanged">
+          <TreeView.Styles>
+            <Style Selector="TreeViewItem">
+              <Setter Property="MinHeight" Value="18" />
+              <Setter Property="Padding" Value="0" />
+              <Setter Property="Margin" Value="0" />
+            </Style>
+          </TreeView.Styles>
           <TreeView.ItemTemplate>
             <TreeDataTemplate DataType="models:FileTreeNode" ItemsSource="{Binding Children}">
-              <TextBlock Text="{Binding Name}" DoubleTapped="TreeNode_OnDoubleTapped">
+              <TextBlock Text="{Binding Name}"
+                         FontFamily="monospace"
+                         FontSize="14"
+                         LineHeight="18"
+                         Margin="0"
+                         Padding="0"
+                         VerticalAlignment="Center"
+                         DoubleTapped="TreeNode_OnDoubleTapped">
                 <TextBlock.ContextMenu>
                   <ContextMenu>
+                    <ContextMenu.Styles>
+                      <Style Selector="MenuItem">
+                        <Setter Property="MinHeight" Value="18" />
+                        <Setter Property="Padding" Value="6,1" />
+                        <Setter Property="Margin" Value="0" />
+                        <Setter Property="FontSize" Value="14" />
+                        <Setter Property="FontFamily" Value="monospace" />
+                      </Style>
+                    </ContextMenu.Styles>
                     <MenuItem Header="Open" Click="OpenSelectedMenuItem_OnClick" />
                     <MenuItem Header="Compare with current buffer" Click="CompareSelectedMenuItem_OnClick" />
                   </ContextMenu>
@@ -38,8 +86,10 @@
           </TreeView.ItemTemplate>
         </TreeView>
       </Border>
-      <GridSplitter Grid.Column="1" Width="5" Background="#404040" ResizeDirection="Columns" />
-      <controls:LineGridControl Grid.Column="2" x:Name="EditorGrid" />
+      <GridSplitter Grid.Column="1" Width="5" Background="#d0d0d0" ResizeDirection="Columns" />
+      <Border Grid.Column="2" Background="#1e1e1e">
+        <controls:LineGridControl x:Name="EditorGrid" />
+      </Border>
     </Grid>
   </DockPanel>
 </Window>
