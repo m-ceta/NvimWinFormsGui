@@ -22,5 +22,17 @@ namespace NvimWinFormsGui.Properties {
                 return defaultInstance;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool UiRedrawDebugEnabled {
+            get {
+                return ((bool)(this["UiRedrawDebugEnabled"]));
+            }
+            set {
+                this["UiRedrawDebugEnabled"] = value;
+            }
+        }
     }
 }

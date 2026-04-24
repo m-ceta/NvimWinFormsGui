@@ -1,6 +1,7 @@
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.IO.Pipes;
@@ -26,6 +27,7 @@ public sealed class MainForm : Form
     private const int Panel2Min = 400;
 
     private const int MaxExpandedDirsToSave = 100;
+    private const string UiRedrawDebugEnvVar = "NVIM_WINFORMSGUI_UI_DEBUG";
 
     private enum OpenMode { NewTab, Current, VSplit, Split }
     private OpenMode _openMode = OpenMode.NewTab;
@@ -112,6 +114,29 @@ public sealed class MainForm : Form
                      "NvimWinFormsGui", "ui_debug.log");
 
     private bool _restoreInProgress;
+    private bool _uiRedrawDebugEnabled;
+
+    private static readonly HashSet<string> UiRedrawDebugEventNames = new(StringComparer.Ordinal)
+    {
+        "option_set",
+        "hl_attr_define",
+        "grid_resize",
+        "grid_line",
+        "grid_clear",
+        "grid_scroll",
+        "win_pos",
+        "win_float_pos",
+        "win_hide",
+        "win_close",
+        "popupmenu_show",
+        "popupmenu_select",
+        "popupmenu_hide",
+        "cmdline_show",
+        "cmdline_hide",
+        "msg_show",
+        "msg_clear",
+        "flush"
+    };
 
     // ===== Neovim RPC =====
     private NvimRpcClient? _nvim;
@@ -139,6 +164,7 @@ public sealed class MainForm : Form
     public MainForm(string[] args)
     {
         _startupArgs = args ?? Array.Empty<string>();
+        _uiRedrawDebugEnabled = GetInitialUiRedrawDebugEnabled();
 
         Text = "Neovim (UI attach)";
         Width = InitialWidth;
@@ -314,6 +340,7 @@ public sealed class MainForm : Form
 
                 EnsureNvimStartedAndAttach();
                 OpenStartupArgsOnce();
+                PostUiDebugConfigToWeb();
 
                 BeginInvoke(new Action(() =>
                 {
@@ -392,7 +419,7 @@ public sealed class MainForm : Form
                 return;
 
             case "debug":
-                if (!string.IsNullOrWhiteSpace(msg.data))
+                if (_uiRedrawDebugEnabled && !string.IsNullOrWhiteSpace(msg.data))
                     AppendDebugLog(msg.data!);
                 return;
 
@@ -507,6 +534,58 @@ public sealed class MainForm : Form
         }
     }
 
+    private static bool GetInitialUiRedrawDebugEnabled()
+    {
+        var env = Environment.GetEnvironmentVariable(UiRedrawDebugEnvVar);
+        if (!string.IsNullOrWhiteSpace(env))
+        {
+            env = env.Trim();
+            return env == "1"
+                || env.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || env.Equals("on", StringComparison.OrdinalIgnoreCase)
+                || env.Equals("yes", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return Properties.Settings.Default.UiRedrawDebugEnabled;
+    }
+
+    private void SetUiRedrawDebugEnabled(bool enabled, bool persist)
+    {
+        _uiRedrawDebugEnabled = enabled;
+
+        if (persist)
+        {
+            try
+            {
+                Properties.Settings.Default.UiRedrawDebugEnabled = enabled;
+                Properties.Settings.Default.Save();
+            }
+            catch
+            {
+            }
+        }
+
+        AppendDebugLog($"[config] ui_redraw_debug={(enabled ? "on" : "off")}");
+        PostUiDebugConfigToWeb();
+    }
+
+    private void PostUiDebugConfigToWeb()
+    {
+        if (_web.CoreWebView2 is null) return;
+
+        try
+        {
+            _web.CoreWebView2.PostWebMessageAsString(JsonSerializer.Serialize(new
+            {
+                type = "config",
+                uiDebugEnabled = _uiRedrawDebugEnabled
+            }));
+        }
+        catch
+        {
+        }
+    }
+
     private async Task AttachUiAsync()
     {
         if (_nvim is null || _uiAttached) return;
@@ -514,6 +593,8 @@ public sealed class MainForm : Form
         var opts = new Dictionary<string, object?>
         {
             ["rgb"] = true,
+            ["ext_hlstate"] = true,
+            ["ext_cmdline"] = true,
             ["ext_linegrid"] = true,
             ["ext_multigrid"] = true,
             ["ext_messages"] = true,
@@ -613,6 +694,9 @@ public sealed class MainForm : Form
 
     private void OnRedraw(IReadOnlyList<object?> redrawParams)
     {
+        if (_uiRedrawDebugEnabled)
+            AppendRedrawDebugSummary(redrawParams);
+
         _redrawQueue.Enqueue(redrawParams);
 
         if (!_firstRedrawSeen)
@@ -643,6 +727,322 @@ public sealed class MainForm : Form
             }));
         }, TaskScheduler.Default);
     }
+
+    private void AppendRedrawDebugSummary(IReadOnlyList<object?> redrawParams)
+    {
+        foreach (var evt in redrawParams)
+        {
+            if (evt is not List<object?> update || update.Count == 0)
+                continue;
+
+            var name = DecodeRedrawString(update[0]);
+            if (!UiRedrawDebugEventNames.Contains(name))
+                continue;
+
+            var args = update.Skip(1).ToArray();
+            AppendDebugLog($"[redraw] {MapDebugEventName(name)} {SummarizeRedrawEvent(name, args)}");
+        }
+    }
+
+    private static string SummarizeRedrawEvent(string name, object?[] args)
+    {
+        return name switch
+        {
+            "option_set" => SummarizeOptionSet(args),
+            "hl_attr_define" => SummarizeHlAttrDefine(args),
+            "grid_resize" => SummarizeGridResize(args),
+            "grid_line" => SummarizeGridLine(args),
+            "grid_clear" => SummarizeGridClear(args),
+            "grid_scroll" => SummarizeGridScroll(args),
+            "win_pos" => SummarizeWinPos(args),
+            "win_float_pos" => SummarizeWinFloatPos(args),
+            "win_hide" => SummarizeGridIds(args),
+            "win_close" => SummarizeGridIds(args),
+            "popupmenu_show" => SummarizePopupmenuShow(args),
+            "popupmenu_select" => SummarizePopupmenuSelect(args),
+            "popupmenu_hide" => $"count={args.Length}",
+            "cmdline_show" => SummarizeCmdlineShow(args),
+            "cmdline_hide" => SummarizeCmdlineHide(args),
+            "msg_show" => SummarizeMsgShow(args),
+            "msg_clear" => $"count={args.Length}",
+            "flush" => $"count={Math.Max(1, args.Length)}",
+            _ => $"count={args.Length}"
+        };
+    }
+
+    private static string SummarizeOptionSet(object?[] args)
+    {
+        var parts = new List<string>();
+        foreach (var item in args.Take(4))
+        {
+            var a = NormalizeRedrawArg(item);
+            var name = DecodeRedrawString(a.ElementAtOrDefault(0));
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            var value = TruncateForLog(DecodeRedrawString(a.ElementAtOrDefault(1)), 32);
+            parts.Add(string.IsNullOrWhiteSpace(value) ? name : $"{name}={value}");
+        }
+
+        return $"count={args.Length} options={JoinLimited(parts, 4)}";
+    }
+
+    private static string SummarizeHlAttrDefine(object?[] args)
+    {
+        var ids = args
+            .Select(item => ToDebugInt(NormalizeRedrawArg(item).ElementAtOrDefault(0)))
+            .Where(id => id > 0)
+            .Take(8)
+            .Select(id => id.ToString())
+            .ToList();
+
+        return $"count={args.Length} ids={JoinLimited(ids, 8)}";
+    }
+
+    private static string SummarizeGridResize(object?[] args)
+    {
+        var parts = new List<string>();
+        foreach (var item in args.Take(6))
+        {
+            var a = NormalizeRedrawArg(item);
+            parts.Add($"g{ToDebugInt(a.ElementAtOrDefault(0))}={ToDebugInt(a.ElementAtOrDefault(1))}x{ToDebugInt(a.ElementAtOrDefault(2))}");
+        }
+
+        return $"count={args.Length} {JoinLimited(parts, 6)}";
+    }
+
+    private static string SummarizeGridLine(object?[] args)
+    {
+        var grids = new HashSet<int>();
+        var rowMin = int.MaxValue;
+        var rowMax = int.MinValue;
+        var cellRuns = 0;
+        var cellCount = 0;
+
+        foreach (var item in args)
+        {
+            var a = NormalizeRedrawArg(item);
+            var gridId = ToDebugInt(a.ElementAtOrDefault(0));
+            var row = ToDebugInt(a.ElementAtOrDefault(1));
+            if (gridId > 0) grids.Add(gridId);
+            rowMin = Math.Min(rowMin, row);
+            rowMax = Math.Max(rowMax, row);
+
+            if (a.ElementAtOrDefault(3) is List<object?> cells)
+            {
+                cellRuns += cells.Count;
+                foreach (var cellObj in cells)
+                {
+                    var cell = NormalizeRedrawArg(cellObj);
+                    var repeat = Math.Max(1, ToDebugInt(cell.ElementAtOrDefault(2)));
+                    var text = DecodeRedrawString(cell.ElementAtOrDefault(0));
+                    var glyphs = Math.Max(1, StringInfo.ParseCombiningCharacters(text).Length);
+                    cellCount += repeat * glyphs;
+                }
+            }
+        }
+
+        var rowText = rowMin == int.MaxValue ? "-" : rowMin == rowMax ? rowMin.ToString() : $"{rowMin}-{rowMax}";
+        var gridText = grids.Count == 0 ? "-" : string.Join(",", grids.OrderBy(x => x).Select(x => $"g{x}"));
+        return $"updates={args.Length} grids={gridText} rows={rowText} cellRuns={cellRuns} cells={cellCount}";
+    }
+
+    private static string SummarizeGridClear(object?[] args) => SummarizeGridIds(args);
+
+    private static string SummarizeGridScroll(object?[] args)
+    {
+        var parts = new List<string>();
+        foreach (var item in args.Take(6))
+        {
+            var a = NormalizeRedrawArg(item);
+            parts.Add(
+                $"g{ToDebugInt(a.ElementAtOrDefault(0))}" +
+                $" top={ToDebugInt(a.ElementAtOrDefault(1))}" +
+                $" bot={ToDebugInt(a.ElementAtOrDefault(2))}" +
+                $" left={ToDebugInt(a.ElementAtOrDefault(3))}" +
+                $" right={ToDebugInt(a.ElementAtOrDefault(4))}" +
+                $" rowsDelta={ToDebugInt(a.ElementAtOrDefault(5))}" +
+                $" colsDelta={ToDebugInt(a.ElementAtOrDefault(6))}");
+        }
+
+        return $"count={args.Length} {JoinLimited(parts, 6)}";
+    }
+
+    private static string SummarizeWinPos(object?[] args)
+    {
+        var parts = new List<string>();
+        foreach (var item in args.Take(6))
+        {
+            var a = NormalizeRedrawArg(item);
+            parts.Add(
+                $"g{ToDebugInt(a.ElementAtOrDefault(0))}" +
+                $" row={ToDebugInt(a.ElementAtOrDefault(2))}" +
+                $" col={ToDebugInt(a.ElementAtOrDefault(3))}" +
+                $" size={ToDebugInt(a.ElementAtOrDefault(4))}x{ToDebugInt(a.ElementAtOrDefault(5))}");
+        }
+
+        return $"count={args.Length} {JoinLimited(parts, 6)}";
+    }
+
+    private static string SummarizeWinFloatPos(object?[] args)
+    {
+        var parts = new List<string>();
+        foreach (var item in args.Take(6))
+        {
+            var a = NormalizeRedrawArg(item);
+            parts.Add(
+                $"g{ToDebugInt(a.ElementAtOrDefault(0))}" +
+                $" anchor={DecodeRedrawString(a.ElementAtOrDefault(2))}" +
+                $" anchorGrid={ToDebugInt(a.ElementAtOrDefault(3))}" +
+                $" row={ToDebugInt(a.ElementAtOrDefault(4))}" +
+                $" col={ToDebugInt(a.ElementAtOrDefault(5))}" +
+                $" focusable={ToDebugBool(a.ElementAtOrDefault(6))}" +
+                $" z={ToDebugInt(a.ElementAtOrDefault(7))}");
+        }
+
+        return $"count={args.Length} {JoinLimited(parts, 6)}";
+    }
+
+    private static string SummarizePopupmenuShow(object?[] args)
+    {
+        var parts = new List<string>();
+        foreach (var item in args.Take(4))
+        {
+            var a = NormalizeRedrawArg(item);
+            var itemCount = a.ElementAtOrDefault(0) is List<object?> items ? items.Count : 0;
+            parts.Add(
+                $"selected={ToDebugInt(a.ElementAtOrDefault(1))}" +
+                $" row={ToDebugInt(a.ElementAtOrDefault(2))}" +
+                $" col={ToDebugInt(a.ElementAtOrDefault(3))}" +
+                $" grid={ToDebugInt(a.ElementAtOrDefault(4))}" +
+                $" items={itemCount}");
+        }
+
+        return $"count={args.Length} {JoinLimited(parts, 4)}";
+    }
+
+    private static string SummarizePopupmenuSelect(object?[] args)
+    {
+        var values = args
+            .Take(8)
+            .Select(item => ToDebugInt(NormalizeRedrawArg(item).ElementAtOrDefault(0)).ToString())
+            .ToList();
+        return $"count={args.Length} selected={JoinLimited(values, 8)}";
+    }
+
+    private static string SummarizeCmdlineShow(object?[] args)
+    {
+        var parts = new List<string>();
+        foreach (var item in args.Take(4))
+        {
+            var a = NormalizeRedrawArg(item);
+            parts.Add(
+                $"level={Math.Max(1, ToDebugInt(a.ElementAtOrDefault(5)))}" +
+                $" pos={ToDebugInt(a.ElementAtOrDefault(1))}" +
+                $" text={TruncateForLog(ChunksToTextForDebug(a.ElementAtOrDefault(0)), 48)}");
+        }
+
+        return $"count={args.Length} {JoinLimited(parts, 4)}";
+    }
+
+    private static string SummarizeCmdlineHide(object?[] args)
+    {
+        var levels = args
+            .Take(8)
+            .Select(item => Math.Max(1, ToDebugInt(NormalizeRedrawArg(item).ElementAtOrDefault(0))).ToString())
+            .ToList();
+        return $"count={args.Length} levels={JoinLimited(levels, 8)}";
+    }
+
+    private static string SummarizeMsgShow(object?[] args)
+    {
+        var parts = new List<string>();
+        foreach (var item in args.Take(4))
+        {
+            var a = NormalizeRedrawArg(item);
+            parts.Add(
+                $"kind={DecodeRedrawString(a.ElementAtOrDefault(0))}" +
+                $" replace={ToDebugBool(a.ElementAtOrDefault(2))}" +
+                $" append={ToDebugBool(a.ElementAtOrDefault(4))}" +
+                $" text={TruncateForLog(ChunksToTextForDebug(a.ElementAtOrDefault(1)), 48)}");
+        }
+
+        return $"count={args.Length} {JoinLimited(parts, 4)}";
+    }
+
+    private static string SummarizeGridIds(object?[] args)
+    {
+        var ids = args
+            .Take(12)
+            .Select(item => ToDebugInt(NormalizeRedrawArg(item).ElementAtOrDefault(0)))
+            .Where(id => id > 0)
+            .Select(id => $"g{id}")
+            .ToList();
+        return $"count={args.Length} grids={JoinLimited(ids, 12)}";
+    }
+
+    private static object?[] NormalizeRedrawArg(object? item) => item is List<object?> list ? list.ToArray() : [item];
+
+    private static string DecodeRedrawString(object? value) => NvimRpcClient.ToJsonable(value)?.ToString() ?? string.Empty;
+
+    private static int ToDebugInt(object? value) => NvimRpcClient.ToJsonable(value) switch
+    {
+        int i => i,
+        long l => (int)l,
+        double d => (int)Math.Round(d),
+        float f => (int)Math.Round(f),
+        string s when int.TryParse(s, out var n) => n,
+        _ => 0
+    };
+
+    private static bool ToDebugBool(object? value) => NvimRpcClient.ToJsonable(value) switch
+    {
+        bool b => b,
+        int i => i != 0,
+        long l => l != 0,
+        string s when bool.TryParse(s, out var b) => b,
+        _ => false
+    };
+
+    private static string ChunksToTextForDebug(object? chunks)
+    {
+        if (chunks is not List<object?> list)
+            return DecodeRedrawString(chunks);
+
+        var parts = new List<string>(list.Count);
+        foreach (var item in list)
+        {
+            if (item is List<object?> chunk)
+                parts.Add(chunk.Count >= 2 ? DecodeRedrawString(chunk[1]) : DecodeRedrawString(chunk.FirstOrDefault()));
+            else
+                parts.Add(DecodeRedrawString(item));
+        }
+
+        return string.Concat(parts);
+    }
+
+    private static string JoinLimited(IReadOnlyList<string> values, int limit)
+    {
+        if (values.Count == 0) return "-";
+        var trimmed = values.Take(limit).ToList();
+        var text = string.Join(", ", trimmed);
+        if (values.Count > limit)
+            text += ", ...";
+        return text;
+    }
+
+    private static string TruncateForLog(string text, int maxLength)
+    {
+        text = text.Replace("\r", "\\r").Replace("\n", "\\n");
+        if (text.Length <= maxLength) return text;
+        return text[..maxLength] + "...";
+    }
+
+    private static string MapDebugEventName(string name) => name switch
+    {
+        "popupmenu_show" => "pum_show",
+        "popupmenu_select" => "pum_select",
+        "popupmenu_hide" => "pum_hide",
+        _ => name
+    };
 
     private void TryApplyBackground(string bgHex)
     {
@@ -731,10 +1131,19 @@ public sealed class MainForm : Form
         openModeMenu.DropDownItems.Add(MakeOpenModeItem("垂直分割", OpenMode.VSplit, Keys.None));
         openModeMenu.DropDownItems.Add(MakeOpenModeItem("水平分割", OpenMode.Split, Keys.None));
 
+        var redrawDebugLog = new ToolStripMenuItem("UI redraw debug log")
+        {
+            CheckOnClick = true,
+            Checked = _uiRedrawDebugEnabled
+        };
+        redrawDebugLog.CheckedChanged += (_, __) => SetUiRedrawDebugEnabled(redrawDebugLog.Checked, persist: true);
+
         viewMenu.DropDownItems.Add(openModeMenu);
         viewMenu.DropDownItems.Add(new ToolStripSeparator());
         viewMenu.DropDownItems.Add(changeRoot);
         viewMenu.DropDownItems.Add(reload);
+        viewMenu.DropDownItems.Add(new ToolStripSeparator());
+        viewMenu.DropDownItems.Add(redrawDebugLog);
 
         _menu.Items.Add(fileMenu);
         _menu.Items.Add(viewMenu);
