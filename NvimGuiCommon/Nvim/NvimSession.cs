@@ -49,52 +49,73 @@ public sealed class NvimSession : IDisposable
         var options = new Dictionary<string, object?>
         {
             ["rgb"] = true,
+            ["ext_cmdline"] = true,
             ["ext_linegrid"] = true,
             ["ext_hlstate"] = true,
             ["ext_multigrid"] = true,
             ["ext_messages"] = true,
-            ["ext_popupmenu"] = false,
-            ["ext_tabline"] = false,
+            ["ext_popupmenu"] = true,
+            ["ext_tabline"] = true,
         };
 
-        await _rpc.CallAsync("nvim_ui_attach", cols, rows, options);
-        _attached = true;
+        try
+        {
+            await _rpc.CallAsync("nvim_ui_attach", cols, rows, options);
+            _attached = true;
+        }
+        catch (Exception ex) when (IsExpectedDisconnect(ex))
+        {
+        }
     }
 
     public async Task ResizeAsync(int cols, int rows)
     {
         if (_rpc is null || !_attached || cols <= 0 || rows <= 0) return;
-        await _rpc.NotifyAsync("nvim_ui_try_resize", cols, rows);
+        try { await _rpc.NotifyAsync("nvim_ui_try_resize", cols, rows); }
+        catch (Exception ex) when (IsExpectedDisconnect(ex)) { }
     }
 
     public async Task InputAsync(string input, bool isTermcode)
     {
         if (_rpc is null || string.IsNullOrEmpty(input)) return;
         var send = isTermcode ? input : input.Replace("<", "<LT>");
-        await _rpc.CallAsync("nvim_input", send);
+        try { await _rpc.CallAsync("nvim_input", send); }
+        catch (Exception ex) when (IsExpectedDisconnect(ex)) { }
     }
 
     public async Task MouseAsync(string button, string action, string modifiers, int grid, int row, int col)
     {
         if (_rpc is null) return;
-        await _rpc.CallAsync("nvim_input_mouse", button, action, modifiers, grid, row, col);
+        try { await _rpc.CallAsync("nvim_input_mouse", button, action, modifiers, grid, row, col); }
+        catch (Exception ex) when (IsExpectedDisconnect(ex)) { }
     }
 
     public async Task CommandAsync(string ex)
     {
         if (_rpc is null || string.IsNullOrWhiteSpace(ex)) return;
-        await _rpc.CallAsync("nvim_command", ex);
+        try { await _rpc.CallAsync("nvim_command", ex); }
+        catch (Exception ex2) when (IsExpectedDisconnect(ex2)) { }
     }
 
     public async Task<string?> GetCurrentBufferPathAsync()
     {
         if (_rpc is null) return null;
-        var result = await _rpc.CallAsync("nvim_eval", "expand('%:p')");
-        return NvimRpcClient.ToJsonable(result)?.ToString();
+        try
+        {
+            var result = await _rpc.CallAsync("nvim_eval", "expand('%:p')");
+            return NvimRpcClient.ToJsonable(result)?.ToString();
+        }
+        catch (Exception ex) when (IsExpectedDisconnect(ex))
+        {
+            return null;
+        }
     }
 
     public void Dispose()
     {
         try { _rpc?.Dispose(); } catch { }
     }
+
+    private static bool IsExpectedDisconnect(Exception ex)
+        => ex is IOException or ObjectDisposedException or OperationCanceledException or TaskCanceledException;
 }

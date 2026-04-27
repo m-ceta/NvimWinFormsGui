@@ -22,7 +22,9 @@ public sealed class EditorController : IDisposable
     {
         await _session.StartAsync();
         await _session.AttachUiAsync(_cols, _rows);
+        await _session.CommandAsync("set guicursor=n-v-c:block,i-ci-ve:ver25,r-cr:hor20,o:hor50");
         await _session.CommandAsync("set laststatus=2");
+        await _session.CommandAsync("set mouse=a");
         await _session.CommandAsync("redrawstatus!");
     }
 
@@ -38,6 +40,8 @@ public sealed class EditorController : IDisposable
     public Task SaveAsync() => _session.CommandAsync("write");
     public Task SaveAsAsync(string path) => _session.CommandAsync($"saveas {EscapeEx(path)}");
     public Task CloseBufferAsync() => _session.CommandAsync("bdelete");
+    public Task SwitchTabAsync(int index) => index > 0 ? _session.CommandAsync($"tabnext {index}") : Task.CompletedTask;
+    public Task CloseTabAsync(int index) => index > 0 ? _session.CommandAsync($"tabclose {index}") : Task.CompletedTask;
     public Task<string?> GetCurrentBufferPathAsync() => _session.GetCurrentBufferPathAsync();
     public Task DiffSplitAsync(string path) => _session.CommandAsync($"vert diffsplit {EscapeEx(path)}");
 

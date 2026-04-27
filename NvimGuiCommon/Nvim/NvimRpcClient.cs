@@ -24,6 +24,7 @@ public sealed class NvimRpcClient : IDisposable
 
     private int _msgId;
     private readonly ConcurrentDictionary<int, TaskCompletionSource<object?>> _pending = new();
+    private volatile bool _disposed;
 
     public event Action<IReadOnlyList<object?>>? Redraw;   // params[0] = list of events
     public event Action<int>? Exited;
@@ -90,7 +91,11 @@ public static NvimRpcClient Start(ProcessStartInfo psi) => new NvimRpcClient(psi
 
 public void Dispose()
     {
+        _disposed = true;
         try { _cts.Cancel(); } catch { }
+        foreach (var pending in _pending.Values)
+            pending.TrySetCanceled();
+        _pending.Clear();
         try { _stdin.Dispose(); } catch { }
         try { _stdout.Dispose(); } catch { }
         try { _stderr.Dispose(); } catch { }
@@ -107,6 +112,9 @@ public void Dispose()
                 var obj = await _reader.ReadNextAsync(ct).ConfigureAwait(false);
                 HandleIncoming(obj);
             }
+        }
+        catch (Exception ex) when (IsExpectedDisconnect(ex))
+        {
         }
         catch (Exception ex)
         {
@@ -126,6 +134,9 @@ public void Dispose()
                 var s = Encoding.UTF8.GetString(buf, 0, n);
                 try { Stderr?.Invoke(s); } catch { }
             }
+        }
+        catch (Exception ex) when (IsExpectedDisconnect(ex))
+        {
         }
         catch (Exception ex)
         {
@@ -169,6 +180,9 @@ public void Dispose()
 
     public Task<object?> CallAsync(string method, params object?[] args)
     {
+        if (_disposed || _proc.HasExited)
+            return Task.FromCanceled<object?>(new CancellationToken(true));
+
         int id = Interlocked.Increment(ref _msgId);
         var tcs = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
         _pending[id] = tcs;
@@ -176,25 +190,58 @@ public void Dispose()
         var msg = new object?[] { 0L, (long)id, method, args };
         var bin = MsgPack.Pack(msg);
 
-        lock (_stdin)
+        try
         {
-            _stdin.Write(bin, 0, bin.Length);
-            _stdin.Flush();
+            lock (_stdin)
+            {
+                _stdin.Write(bin, 0, bin.Length);
+                _stdin.Flush();
+            }
+        }
+        catch (Exception ex) when (IsExpectedDisconnect(ex))
+        {
+            _pending.TryRemove(id, out _);
+            tcs.TrySetCanceled();
         }
         return tcs.Task;
     }
 
     public Task NotifyAsync(string method, params object?[] args)
     {
+        if (_disposed || _proc.HasExited)
+            return Task.CompletedTask;
+
         var msg = new object?[] { 2L, method, args };
         var bin = MsgPack.Pack(msg);
 
-        lock (_stdin)
+        try
         {
-            _stdin.Write(bin, 0, bin.Length);
-            _stdin.Flush();
+            lock (_stdin)
+            {
+                _stdin.Write(bin, 0, bin.Length);
+                _stdin.Flush();
+            }
+        }
+        catch (Exception ex) when (IsExpectedDisconnect(ex))
+        {
         }
         return Task.CompletedTask;
+    }
+
+    private bool IsExpectedDisconnect(Exception ex)
+    {
+        if (_disposed || _cts.IsCancellationRequested) return true;
+        if (_proc.HasExited) return true;
+        if (ex is OperationCanceledException or ObjectDisposedException or TaskCanceledException) return true;
+        if (ex is IOException ioEx)
+        {
+            var message = ioEx.Message ?? string.Empty;
+            if (message.Contains("Broken pipe", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("pipe", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("パイプ", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     private static string? DecodeString(object? v)

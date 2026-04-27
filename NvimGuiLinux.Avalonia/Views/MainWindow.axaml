@@ -7,17 +7,23 @@
         x:DataType="vm:MainWindowViewModel"
         Width="1100" Height="750"
         MinWidth="700" MinHeight="520"
-        Background="#f3f3f3"
+        Background="#f0f0f0"
         Title="Nvim Linux GUI">
-  <DockPanel Background="#f3f3f3">
-    <Menu DockPanel.Dock="Top" Background="#f3f3f3" Foreground="#1f1f1f">
+  <DockPanel Background="#f0f0f0">
+    <Menu DockPanel.Dock="Top" Background="#f0f0f0" Foreground="#202020">
       <Menu.Styles>
         <Style Selector="MenuItem">
-          <Setter Property="MinHeight" Value="18" />
-          <Setter Property="Padding" Value="6,1" />
+          <Setter Property="Padding" Value="10,3" />
           <Setter Property="Margin" Value="0" />
-          <Setter Property="FontSize" Value="14" />
-          <Setter Property="FontFamily" Value="monospace" />
+          <Setter Property="FontSize" Value="12.5" />
+        </Style>
+        <Style Selector="MenuItem:pointerover">
+          <Setter Property="Background" Value="#e5f3ff" />
+          <Setter Property="Foreground" Value="#0f2d4a" />
+        </Style>
+        <Style Selector="MenuItem:selected">
+          <Setter Property="Background" Value="#cce8ff" />
+          <Setter Property="Foreground" Value="#0f2d4a" />
         </Style>
       </Menu.Styles>
       <MenuItem Header="_File">
@@ -31,50 +37,66 @@
       </MenuItem>
     </Menu>
 
-    <Border DockPanel.Dock="Bottom" Background="#007acc" MinHeight="24">
+    <Border DockPanel.Dock="Bottom"
+            Background="#f0f0f0"
+            BorderBrush="#d4d4d4"
+            BorderThickness="1,1,0,0"
+            MinHeight="24">
       <TextBlock Margin="8,2"
                  VerticalAlignment="Center"
-                 Foreground="#ffffff"
+                 Foreground="#303030"
                  FontSize="12"
                  Text="{Binding StatusText}" />
     </Border>
 
-    <Grid ColumnDefinitions="275,5,*" Background="#f3f3f3">
+    <Grid ColumnDefinitions="280,4,*" Background="#f0f0f0">
       <Border Grid.Column="0"
-              Background="#fafafa"
-              BorderBrush="#d0d0d0"
+              Background="#ffffff"
+              BorderBrush="#d9d9d9"
               BorderThickness="0,0,1,0"
-              Padding="4">
+              Padding="0">
         <TreeView ItemsSource="{Binding Roots}"
-                  Background="#fafafa"
-                  Foreground="#1f1f1f"
                   SelectionChanged="TreeView_OnSelectionChanged">
           <TreeView.Styles>
+            <Style Selector="TreeView">
+              <Setter Property="Padding" Value="4,6,4,6" />
+            </Style>
             <Style Selector="TreeViewItem">
-              <Setter Property="MinHeight" Value="18" />
+              <Setter Property="MinHeight" Value="24" />
               <Setter Property="Padding" Value="0" />
               <Setter Property="Margin" Value="0" />
+            </Style>
+            <Style Selector="TreeViewItem /template/ ContentPresenter">
+              <Setter Property="Background" Value="Transparent" />
+              <Setter Property="Margin" Value="0" />
+            </Style>
+            <Style Selector="TreeViewItem:pointerover /template/ ContentPresenter">
+              <Setter Property="Background" Value="#e5f3ff" />
+            </Style>
+            <Style Selector="TreeViewItem:selected /template/ ContentPresenter">
+              <Setter Property="Background" Value="#cce8ff" />
+            </Style>
+            <Style Selector="TreeViewItem:selected TextBlock">
+              <Setter Property="Foreground" Value="#0f2d4a" />
             </Style>
           </TreeView.Styles>
           <TreeView.ItemTemplate>
             <TreeDataTemplate DataType="models:FileTreeNode" ItemsSource="{Binding Children}">
               <TextBlock Text="{Binding Name}"
-                         FontFamily="monospace"
-                         FontSize="14"
-                         LineHeight="18"
+                         FontSize="12.5"
+                         LineHeight="20"
                          Margin="0"
-                         Padding="0"
+                         Padding="2,2,6,2"
                          VerticalAlignment="Center"
                          DoubleTapped="TreeNode_OnDoubleTapped">
                 <TextBlock.ContextMenu>
                   <ContextMenu>
                     <ContextMenu.Styles>
                       <Style Selector="MenuItem">
-                        <Setter Property="MinHeight" Value="18" />
-                        <Setter Property="Padding" Value="6,1" />
+                        <Setter Property="MinHeight" Value="24" />
+                        <Setter Property="Padding" Value="10,3" />
                         <Setter Property="Margin" Value="0" />
-                        <Setter Property="FontSize" Value="14" />
-                        <Setter Property="FontFamily" Value="monospace" />
+                        <Setter Property="FontSize" Value="12.5" />
                       </Style>
                     </ContextMenu.Styles>
                     <MenuItem Header="Open" Click="OpenSelectedMenuItem_OnClick" />
@@ -86,9 +108,15 @@
           </TreeView.ItemTemplate>
         </TreeView>
       </Border>
-      <GridSplitter Grid.Column="1" Width="5" Background="#d0d0d0" ResizeDirection="Columns" />
+      <GridSplitter Grid.Column="1" Width="4" Background="#d4d4d4" ResizeDirection="Columns" />
       <Border Grid.Column="2" Background="#1e1e1e">
-        <controls:LineGridControl x:Name="EditorGrid" />
+        <controls:LineGridControl x:Name="EditorGrid"
+                                  FontFamilyName="{Binding FontFamilyName}"
+                                  FontSize="{Binding FontSize}"
+                                  LineHeight="{Binding LineHeight}"
+                                  UseFixedCellMetrics="{Binding UseFixedCellMetrics}"
+                                  FixedCellWidth="{Binding FixedCellWidth}"
+                                  FixedCellHeight="{Binding FixedCellHeight}" />
       </Border>
     </Grid>
   </DockPanel>

@@ -17,6 +17,12 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string rootPath = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
     [ObservableProperty] private OpenMode openMode = OpenMode.NewTab;
     [ObservableProperty] private string statusText = "Ready";
+    [ObservableProperty] private string fontFamilyName = "Noto Sans Mono CJK JP, DejaVu Sans Mono, Noto Sans Mono, monospace";
+    [ObservableProperty] private double fontSize = 14;
+    [ObservableProperty] private double lineHeight = 1.15;
+    [ObservableProperty] private bool useFixedCellMetrics = false;
+    [ObservableProperty] private double fixedCellWidth = 8;
+    [ObservableProperty] private double fixedCellHeight = 18;
 
     public MainWindowViewModel(string[] args)
     {
