@@ -10,6 +10,7 @@ public partial class FileTreeNode : ObservableObject
     private bool _isDirectory;
     private bool _isExpanded;
     private bool _isSelected;
+    private bool _isPlaceholder;
 
     public string Name
     {
@@ -39,6 +40,12 @@ public partial class FileTreeNode : ObservableObject
     {
         get => _isSelected;
         set => SetProperty(ref _isSelected, value);
+    }
+
+    public bool IsPlaceholder
+    {
+        get => _isPlaceholder;
+        set => SetProperty(ref _isPlaceholder, value);
     }
 
     public ObservableCollection<FileTreeNode> Children { get; } = new();

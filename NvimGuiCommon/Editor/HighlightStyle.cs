@@ -8,4 +8,5 @@ public sealed record HighlightStyle(
     bool Italic,
     bool Underline,
     bool Undercurl,
-    bool Strikethrough);
+    bool Strikethrough,
+    int Blend = 0);

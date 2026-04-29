@@ -5,118 +5,121 @@
         xmlns:models="clr-namespace:NvimGuiCommon.Explorer;assembly=NvimGuiCommon"
         x:Class="NvimGuiLinux.Avalonia.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
-        Width="1100" Height="750"
-        MinWidth="700" MinHeight="520"
-        Background="#f0f0f0"
+        Width="1100"
+        Height="750"
+        MinWidth="700"
+        MinHeight="520"
+        Background="#f3f3f3"
         Title="Nvim Linux GUI">
-  <DockPanel Background="#f0f0f0">
-    <Menu DockPanel.Dock="Top" Background="#f0f0f0" Foreground="#202020">
-      <Menu.Styles>
-        <Style Selector="MenuItem">
-          <Setter Property="Padding" Value="10,3" />
-          <Setter Property="Margin" Value="0" />
-          <Setter Property="FontSize" Value="12.5" />
-        </Style>
-        <Style Selector="MenuItem:pointerover">
-          <Setter Property="Background" Value="#e5f3ff" />
-          <Setter Property="Foreground" Value="#0f2d4a" />
-        </Style>
-        <Style Selector="MenuItem:selected">
-          <Setter Property="Background" Value="#cce8ff" />
-          <Setter Property="Foreground" Value="#0f2d4a" />
-        </Style>
-      </Menu.Styles>
-      <MenuItem Header="_File">
-        <MenuItem Header="Open selected" Command="{Binding OpenSelectedCommand}" />
-        <MenuItem Header="Save" Command="{Binding SaveCommand}" />
-        <MenuItem Header="Compare with current buffer" Command="{Binding CompareSelectedWithCurrentCommand}" />
-        <MenuItem Header="Close buffer" Command="{Binding CloseBufferCommand}" />
+  <DockPanel Background="#f3f3f3">
+    <Menu x:Name="MainMenuBar"
+          DockPanel.Dock="Top"
+          FontFamily="Noto Sans CJK JP, Noto Sans, sans-serif"
+          Background="#f3f3f3"
+          Foreground="#202020">
+      <MenuItem Header="ファイル(&amp;F)" SubmenuOpened="MainMenuItem_OnSubmenuOpened">
+        <MenuItem Header="開く(&amp;O)..." Click="MenuOpen_OnClick" />
+        <MenuItem Header="保存(&amp;S)" Click="MenuSave_OnClick" />
+        <MenuItem Header="名前を付けて保存(&amp;A)..." Click="MenuSaveAs_OnClick" />
+        <MenuItem Header="閉じる(&amp;C)" Click="MenuCloseBuffer_OnClick" />
+        <Separator />
+        <MenuItem Header="終了(&amp;Q)" Click="MenuExit_OnClick" />
       </MenuItem>
-      <MenuItem Header="_View">
-        <MenuItem Header="Reload tree" Command="{Binding ReloadTreeCommand}" />
+        <MenuItem Header="表示(&amp;V)" SubmenuOpened="MainMenuItem_OnSubmenuOpened">
+        <MenuItem Header="開き方">
+          <MenuItem x:Name="OpenModeNewTabMenuItem" Header="新しいタブ" Click="OpenModeNewTab_OnClick" />
+          <MenuItem x:Name="OpenModeCurrentMenuItem" Header="現在の画面" Click="OpenModeCurrent_OnClick" />
+          <MenuItem x:Name="OpenModeVSplitMenuItem" Header="垂直分割" Click="OpenModeVSplit_OnClick" />
+          <MenuItem x:Name="OpenModeSplitMenuItem" Header="水平分割" Click="OpenModeSplit_OnClick" />
+        </MenuItem>
+        <Separator />
+        <MenuItem Header="フォルダツリー" Click="ToggleFolderTree_OnClick" />
+        <MenuItem Header="ツリーの更新(&amp;U)..." Click="ChangeTreeRoot_OnClick" />
+        <MenuItem Header="ツリー再読み込み(&amp;R)" Click="ReloadTree_OnClick" />
       </MenuItem>
     </Menu>
 
-    <Border DockPanel.Dock="Bottom"
-            Background="#f0f0f0"
-            BorderBrush="#d4d4d4"
-            BorderThickness="1,1,0,0"
-            MinHeight="24">
-      <TextBlock Margin="8,2"
-                 VerticalAlignment="Center"
-                 Foreground="#303030"
-                 FontSize="12"
-                 Text="{Binding StatusText}" />
-    </Border>
-
-    <Grid ColumnDefinitions="280,4,*" Background="#f0f0f0">
-      <Border Grid.Column="0"
+    <Grid x:Name="LayoutRoot" ColumnDefinitions="280,4,*" Background="#f3f3f3">
+      <Border x:Name="FolderTreePane"
+              Grid.Column="0"
               Background="#ffffff"
-              BorderBrush="#d9d9d9"
-              BorderThickness="0,0,1,0"
-              Padding="0">
-        <TreeView ItemsSource="{Binding Roots}"
-                  SelectionChanged="TreeView_OnSelectionChanged">
-          <TreeView.Styles>
-            <Style Selector="TreeView">
-              <Setter Property="Padding" Value="4,6,4,6" />
-            </Style>
-            <Style Selector="TreeViewItem">
-              <Setter Property="MinHeight" Value="24" />
-              <Setter Property="Padding" Value="0" />
-              <Setter Property="Margin" Value="0" />
-            </Style>
-            <Style Selector="TreeViewItem /template/ ContentPresenter">
-              <Setter Property="Background" Value="Transparent" />
-              <Setter Property="Margin" Value="0" />
-            </Style>
-            <Style Selector="TreeViewItem:pointerover /template/ ContentPresenter">
-              <Setter Property="Background" Value="#e5f3ff" />
-            </Style>
-            <Style Selector="TreeViewItem:selected /template/ ContentPresenter">
-              <Setter Property="Background" Value="#cce8ff" />
-            </Style>
-            <Style Selector="TreeViewItem:selected TextBlock">
-              <Setter Property="Foreground" Value="#0f2d4a" />
-            </Style>
-          </TreeView.Styles>
+              BorderBrush="#d6d6d6"
+              BorderThickness="0,0,1,0">
+        <TreeView x:Name="FolderTreeView"
+                  FontFamily="Noto Sans CJK JP, Noto Sans, sans-serif"
+                  ItemsSource="{Binding Roots}"
+                  SelectionChanged="TreeView_OnSelectionChanged"
+                  PointerPressed="FolderTree_OnPointerPressed"
+                  KeyDown="FolderTree_OnKeyDown">
+          <TreeView.ContextMenu>
+            <ContextMenu x:Name="FolderTreeContextMenu"
+                         FontFamily="Noto Sans CJK JP, Noto Sans, sans-serif"
+                         Opening="FolderTreeContextMenu_OnOpening"
+                         Closed="FolderTreeContextMenu_OnClosed" />
+          </TreeView.ContextMenu>
           <TreeView.ItemTemplate>
             <TreeDataTemplate DataType="models:FileTreeNode" ItemsSource="{Binding Children}">
               <TextBlock Text="{Binding Name}"
                          FontSize="12.5"
-                         LineHeight="20"
-                         Margin="0"
-                         Padding="2,2,6,2"
-                         VerticalAlignment="Center"
-                         DoubleTapped="TreeNode_OnDoubleTapped">
-                <TextBlock.ContextMenu>
-                  <ContextMenu>
-                    <ContextMenu.Styles>
-                      <Style Selector="MenuItem">
-                        <Setter Property="MinHeight" Value="24" />
-                        <Setter Property="Padding" Value="10,3" />
-                        <Setter Property="Margin" Value="0" />
-                        <Setter Property="FontSize" Value="12.5" />
-                      </Style>
-                    </ContextMenu.Styles>
-                    <MenuItem Header="Open" Click="OpenSelectedMenuItem_OnClick" />
-                    <MenuItem Header="Compare with current buffer" Click="CompareSelectedMenuItem_OnClick" />
-                  </ContextMenu>
-                </TextBlock.ContextMenu>
-              </TextBlock>
+                         Padding="4,2"
+                         DoubleTapped="TreeNode_OnDoubleTapped" />
             </TreeDataTemplate>
           </TreeView.ItemTemplate>
         </TreeView>
       </Border>
-      <GridSplitter Grid.Column="1" Width="4" Background="#d4d4d4" ResizeDirection="Columns" />
-      <Border Grid.Column="2" Background="#1e1e1e">
-        <controls:LineGridControl x:Name="EditorGrid"
-                                  FontFamilyName="{Binding FontFamilyName}"
-                                  FontSize="{Binding FontSize}"
-                                  LineHeight="{Binding LineHeight}"
-                                  UseFixedCellMetrics="{Binding UseFixedCellMetrics}"
-                                  FixedCellWidth="{Binding FixedCellWidth}"
-                                  FixedCellHeight="{Binding FixedCellHeight}" />
+
+      <GridSplitter x:Name="FolderTreeSplitter"
+                    Grid.Column="1"
+                    Width="4"
+                    Background="#d0d0d0"
+                    ResizeDirection="Columns"
+                    DragDelta="FolderTreeSplitter_OnDragDelta" />
+
+      <Border x:Name="EditorArea"
+              Grid.Column="2"
+              Background="#1e1e1e">
+        <Grid>
+          <controls:LineGridControl x:Name="EditorGrid"
+                                    ZIndex="0"
+                                    FontFamilyName="{Binding FontFamilyName}"
+                                    FontSize="{Binding FontSize}"
+                                    LineHeight="{Binding LineHeight}"
+                                    UseFixedCellMetrics="{Binding UseFixedCellMetrics}"
+                                    FixedCellWidth="{Binding FixedCellWidth}"
+                                    FixedCellHeight="{Binding FixedCellHeight}" />
+          <controls:FloatingGridControl x:Name="FloatingGridLayer"
+                                        ZIndex="100"
+                                        FontFamilyName="{Binding FontFamilyName}"
+                                        FontSize="{Binding FontSize}"
+                                        LineHeight="{Binding LineHeight}"
+                                        UseFixedCellMetrics="{Binding UseFixedCellMetrics}"
+                                        FixedCellWidth="{Binding FixedCellWidth}"
+                                        FixedCellHeight="{Binding FixedCellHeight}" />
+          <controls:PopupMenuControl x:Name="PopupMenuLayer"
+                                     ZIndex="300"
+                                     FontFamilyName="{Binding FontFamilyName}"
+                                     FontSize="{Binding FontSize}"
+                                     LineHeight="{Binding LineHeight}"
+                                     UseFixedCellMetrics="{Binding UseFixedCellMetrics}"
+                                     FixedCellWidth="{Binding FixedCellWidth}"
+                                     FixedCellHeight="{Binding FixedCellHeight}" />
+          <controls:CmdlineControl x:Name="CmdlineLayer"
+                                   ZIndex="400"
+                                   FontFamilyName="{Binding FontFamilyName}"
+                                   FontSize="{Binding FontSize}"
+                                   LineHeight="{Binding LineHeight}"
+                                   UseFixedCellMetrics="{Binding UseFixedCellMetrics}"
+                                   FixedCellWidth="{Binding FixedCellWidth}"
+                                   FixedCellHeight="{Binding FixedCellHeight}" />
+          <controls:MessageControl x:Name="MessageLayer"
+                                   ZIndex="500"
+                                   FontFamilyName="{Binding FontFamilyName}"
+                                   FontSize="{Binding FontSize}"
+                                   LineHeight="{Binding LineHeight}"
+                                   UseFixedCellMetrics="{Binding UseFixedCellMetrics}"
+                                   FixedCellWidth="{Binding FixedCellWidth}"
+                                   FixedCellHeight="{Binding FixedCellHeight}" />
+        </Grid>
       </Border>
     </Grid>
   </DockPanel>

@@ -3,11 +3,11 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.14.36203.30
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NvimWinFormsGui", "NvimWinFormsGui\NvimWinFormsGui.csproj", "{4535DCA4-9C58-4020-8871-C825350060CA}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NvimWinFormsGui", "NvimWinFormsGui\NvimWinFormsGui.csproj", "{4535DCA4-9C58-4020-8871-C825350060CA}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NvimGuiCommon", "NvimGuiCommon\NvimGuiCommon.csproj", "{C9B96D14-034E-BCD3-DA4F-504913B4BC43}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NvimGuiCommon", "NvimGuiCommon\NvimGuiCommon.csproj", "{C9B96D14-034E-BCD3-DA4F-504913B4BC43}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NvimGuiLinux.Avalonia", "NvimGuiLinux.Avalonia\NvimGuiLinux.Avalonia.csproj", "{F0C01525-24FB-FFB5-4AEF-8AE2517B52F4}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "NvimGuiLinux.Avalonia", "NvimGuiLinux.Avalonia\NvimGuiLinux.Avalonia.csproj", "{F0C01525-24FB-FFB5-4AEF-8AE2517B52F4}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

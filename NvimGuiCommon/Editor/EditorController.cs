@@ -1,4 +1,5 @@
 using NvimGuiCommon.Nvim;
+using NvimGuiCommon.Diagnostics;
 
 namespace NvimGuiCommon.Editor;
 
@@ -13,6 +14,7 @@ public sealed class EditorController : IDisposable
         Grid = new LineGridModel();
         _session.Redraw += events => Grid.ApplyRedraw(events);
         _session.Stderr += s => Stderr?.Invoke(s);
+        _session.Faulted += ex => GuiLogger.Error(GuiLogCategory.RedrawEvent, () => $"NvimSession faulted error={ex}");
     }
 
     public LineGridModel Grid { get; }
@@ -20,23 +22,37 @@ public sealed class EditorController : IDisposable
 
     public async Task StartAsync()
     {
+        GuiLogger.Info(GuiLogCategory.Performance, () => $"EditorController.StartAsync begin cols={_cols} rows={_rows}");
         await _session.StartAsync();
+        GuiLogger.Info(GuiLogCategory.Performance, () => "EditorController.StartAsync session started");
         await _session.AttachUiAsync(_cols, _rows);
+        GuiLogger.Info(GuiLogCategory.Performance, () => "EditorController.StartAsync ui attached");
         await _session.CommandAsync("set guicursor=n-v-c:block,i-ci-ve:ver25,r-cr:hor20,o:hor50");
         await _session.CommandAsync("set laststatus=2");
         await _session.CommandAsync("set mouse=a");
         await _session.CommandAsync("redrawstatus!");
+        GuiLogger.Info(GuiLogCategory.Performance, () => "EditorController.StartAsync commands completed");
     }
 
     public Task ResizeAsync(int cols, int rows)
     {
         _cols = cols;
         _rows = rows;
+        GuiLogger.Debug(GuiLogCategory.Resize, () => $"EditorController.ResizeAsync cols={cols} rows={rows}");
         return _session.ResizeAsync(cols, rows);
     }
 
-    public Task InputAsync(string input, bool isTermcode) => _session.InputAsync(input, isTermcode);
-    public Task MouseAsync(string button, string action, string modifiers, int grid, int row, int col) => _session.MouseAsync(button, action, modifiers, grid, row, col);
+    public Task InputAsync(string input, bool isTermcode)
+    {
+        GuiLogger.Debug(GuiLogCategory.Keyboard, () => $"EditorController.InputAsync data={Sanitize(input)} termcode={isTermcode}");
+        return _session.InputAsync(input, isTermcode);
+    }
+
+    public Task MouseAsync(string button, string action, string modifiers, int grid, int row, int col)
+    {
+        GuiLogger.Debug(GuiLogCategory.Mouse, () => $"EditorController.MouseAsync button={button} action={action} modifiers={modifiers} grid={grid} row={row} col={col}");
+        return _session.MouseAsync(button, action, modifiers, grid, row, col);
+    }
     public Task SaveAsync() => _session.CommandAsync("write");
     public Task SaveAsAsync(string path) => _session.CommandAsync($"saveas {EscapeEx(path)}");
     public Task CloseBufferAsync() => _session.CommandAsync("bdelete");
@@ -62,6 +78,11 @@ public sealed class EditorController : IDisposable
 
     private static string EscapeEx(string path)
         => path.Replace(@"\", @"\\").Replace(" ", @"\ ").Replace("|", @"\|");
+
+    private static string Sanitize(string value)
+        => value
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
 
     public void Dispose() => _session.Dispose();
 }

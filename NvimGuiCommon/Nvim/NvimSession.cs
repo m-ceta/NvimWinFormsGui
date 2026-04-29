@@ -1,4 +1,5 @@
 using NvimGuiCommon.Config;
+using NvimGuiCommon.Diagnostics;
 using System.Diagnostics;
 
 namespace NvimGuiCommon.Nvim;
@@ -23,6 +24,7 @@ public sealed class NvimSession : IDisposable
         if (_rpc is not null) return Task.CompletedTask;
 
         var exe = ExeResolver.ResolveOnPath(_nvimCommand);
+        GuiLogger.Info(GuiLogCategory.Performance, () => $"NvimSession.StartAsync exe={exe}");
         var psi = new ProcessStartInfo
         {
             FileName = exe,
@@ -38,6 +40,7 @@ public sealed class NvimSession : IDisposable
         _rpc.Redraw += p => Redraw?.Invoke(p);
         _rpc.Stderr += s => Stderr?.Invoke(s);
         _rpc.Faulted += ex => Faulted?.Invoke(ex);
+        GuiLogger.Info(GuiLogCategory.Performance, () => "NvimSession.StartAsync rpc started");
         return Task.CompletedTask;
     }
 
@@ -60,11 +63,14 @@ public sealed class NvimSession : IDisposable
 
         try
         {
+            GuiLogger.Info(GuiLogCategory.Performance, () => $"NvimSession.AttachUiAsync cols={cols} rows={rows}");
             await _rpc.CallAsync("nvim_ui_attach", cols, rows, options);
             _attached = true;
+            GuiLogger.Info(GuiLogCategory.Performance, () => "NvimSession.AttachUiAsync attached=true");
         }
         catch (Exception ex) when (IsExpectedDisconnect(ex))
         {
+            GuiLogger.Warn(GuiLogCategory.Performance, () => $"NvimSession.AttachUiAsync expected disconnect error={ex.Message}");
         }
     }
 

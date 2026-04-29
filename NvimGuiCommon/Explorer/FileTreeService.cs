@@ -9,7 +9,6 @@ public sealed class FileTreeService
         var list = new ObservableCollection<FileTreeNode>();
         if (string.IsNullOrWhiteSpace(rootPath) || !Directory.Exists(rootPath)) return list;
         var root = CreateNode(rootPath, true);
-        Populate(root);
         list.Add(root);
         return list;
     }
@@ -29,10 +28,30 @@ public sealed class FileTreeService
     }
 
     private static FileTreeNode CreateNode(string fullPath, bool isDirectory)
-        => new FileTreeNode
+    {
+        var node = new FileTreeNode
         {
             Name = Path.GetFileName(fullPath.TrimEnd(Path.DirectorySeparatorChar)) is { Length: > 0 } n ? n : fullPath,
             FullPath = fullPath,
             IsDirectory = isDirectory,
         };
+        if (isDirectory && DirectoryMayHaveChildren(fullPath))
+        {
+            node.Children.Add(new FileTreeNode
+            {
+                Name = "...",
+                FullPath = fullPath,
+                IsDirectory = false,
+                IsPlaceholder = true
+            });
+        }
+
+        return node;
+    }
+
+    private static bool DirectoryMayHaveChildren(string path)
+    {
+        try { return Directory.EnumerateFileSystemEntries(path).Take(1).Any(); }
+        catch { return false; }
+    }
 }

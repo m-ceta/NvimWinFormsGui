@@ -1,0 +1,5 @@
+<Project>
+  <Target Name="AvaloniaStats"
+          Condition="'$(MSBuildProjectName)' == 'NvimGuiLinux.Avalonia'">
+  </Target>
+</Project>

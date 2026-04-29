@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using NvimGuiCommon.Diagnostics;
 using NvimGuiCommon.Nvim;
 
 namespace NvimGuiCommon.Editor;
@@ -22,6 +23,8 @@ public sealed class LineGridModel
     private GridCell[][] _grid = Array.Empty<GridCell[]>();
     private int _cursorGrid = 1;
     private string _currentModeName = "normal";
+    private bool _historyVisible;
+    private int _transientMessageGeneration;
 
     public int Rows { get; private set; }
     public int Cols { get; private set; }
@@ -53,10 +56,12 @@ public sealed class LineGridModel
     public CursorModeState CurrentCursorModeState { get; private set; } = CursorModeState.Default;
     public string CursorShape => CurrentCursorModeState.CursorShape;
     public bool CursorVisible { get; private set; } = true;
+    public bool HistoryVisible => _historyVisible;
+    public int TransientMessageGeneration => _transientMessageGeneration;
     public int EditorTopOffset => TablineState.Tabs.Count > 0 ? 1 : 0;
     public IEnumerable<GridState> VisibleGrids => _grids.Values
         .Where(g => g.Visible && (!MessageGridId.HasValue || g.Id != MessageGridId.Value))
-        .OrderBy(g => g.ZIndex)
+        .OrderBy(g => g.EffectiveZIndex)
         .ThenBy(g => g.Id);
     public event Action? Changed;
 
@@ -67,9 +72,14 @@ public sealed class LineGridModel
             if (evt is not List<object?> update || update.Count == 0) continue;
             var name = Decode(update[0]);
             var args = update.Skip(1).ToArray();
+            GuiLogger.Debug(GuiLogCategory.RedrawEvent, () => $"redraw name={name} argc={args.Length}");
+            if (GuiLogger.Options.LogEvents)
+                GuiLogger.Trace(GuiLogCategory.RedrawEvent, () => $"redraw name={name} argc={args.Length}");
 
-            switch (name)
+            try
             {
+                switch (name)
+                {
                 case "default_colors_set":
                     foreach (var item in args)
                     {
@@ -96,6 +106,7 @@ public sealed class LineGridModel
                         var underline = false;
                         var undercurl = false;
                         var strikethrough = false;
+                        var blend = 0;
 
                         if (map is not null)
                         {
@@ -111,10 +122,11 @@ public sealed class LineGridModel
                                 else if (key == "underline") underline = ToBool(kv.Value);
                                 else if (key == "undercurl") undercurl = ToBool(kv.Value);
                                 else if (key == "strikethrough") strikethrough = ToBool(kv.Value);
+                                else if (key == "blend") blend = ToInt(kv.Value);
                             }
                         }
 
-                        _highlights[id] = new HighlightStyle(fg, bg, sp, reverse, bold, italic, underline, undercurl, strikethrough);
+                        _highlights[id] = new HighlightStyle(fg, bg, sp, reverse, bold, italic, underline, undercurl, strikethrough, blend);
                     }
                     break;
 
@@ -161,7 +173,15 @@ public sealed class LineGridModel
                         g.Floating = false;
                         g.Row = ToInt(a.ElementAtOrDefault(2));
                         g.Col = ToInt(a.ElementAtOrDefault(3));
+                        g.RenderRow = g.Row;
+                        g.RenderCol = g.Col;
+                        g.AnchorGrid = 1;
+                        g.AnchorRow = 0;
+                        g.AnchorCol = 0;
+                        g.FloatAnchor = "NW";
+                        g.Focusable = true;
                         g.ZIndex = gridId == 1 ? 0 : 100 + gridId;
+                        GuiLogger.Debug(GuiLogCategory.FloatingGrid, () => $"win_pos grid={gridId} row={g.Row} col={g.Col} zindex={g.ZIndex} effective_zindex={g.EffectiveZIndex}");
                     }
                     break;
 
@@ -175,10 +195,18 @@ public sealed class LineGridModel
                         var g = GetGrid(gridId);
                         g.Visible = true;
                         g.Floating = true;
-                        g.Row = (anchorGrid?.Row ?? 0) + ToInt(a.ElementAtOrDefault(4));
-                        g.Col = (anchorGrid?.Col ?? 0) + ToInt(a.ElementAtOrDefault(5));
+                        g.FloatAnchor = Decode(a.ElementAtOrDefault(2));
+                        g.AnchorGrid = anchorGridId;
+                        g.AnchorRow = ToInt(a.ElementAtOrDefault(4));
+                        g.AnchorCol = ToInt(a.ElementAtOrDefault(5));
+                        g.Focusable = ToBool(a.ElementAtOrDefault(6));
+                        g.Row = (anchorGrid?.Row ?? 0) + g.AnchorRow;
+                        g.Col = (anchorGrid?.Col ?? 0) + g.AnchorCol;
+                        g.RenderRow = g.Row;
+                        g.RenderCol = g.Col;
                         var zindex = ToInt(a.ElementAtOrDefault(7));
                         g.ZIndex = zindex > 0 ? zindex : 1000 + gridId;
+                        GuiLogger.Debug(GuiLogCategory.FloatingGrid, () => $"win_float_pos grid={gridId} anchor={g.FloatAnchor} anchor_grid={anchorGridId} anchor_row={g.AnchorRow} anchor_col={g.AnchorCol} row={g.Row} col={g.Col} focusable={g.Focusable} zindex={g.ZIndex} effective_zindex={g.EffectiveZIndex}");
                     }
                     break;
 
@@ -188,7 +216,11 @@ public sealed class LineGridModel
                     foreach (var item in args)
                     {
                         var gridId = ToInt(Normalize(item).ElementAtOrDefault(0));
-                        if (_grids.TryGetValue(gridId, out var g)) g.Visible = false;
+                        if (_grids.TryGetValue(gridId, out var g))
+                        {
+                            g.Visible = false;
+                            GuiLogger.Debug(GuiLogCategory.FloatingGrid, () => $"{name} grid={gridId} visible=false");
+                        }
                     }
                     break;
 
@@ -196,7 +228,11 @@ public sealed class LineGridModel
                     foreach (var item in args)
                     {
                         var gridId = ToInt(Normalize(item).ElementAtOrDefault(0));
-                        if (gridId != 1) _grids.Remove(gridId);
+                        if (gridId != 1)
+                        {
+                            _grids.Remove(gridId);
+                            GuiLogger.Debug(GuiLogCategory.FloatingGrid, () => $"grid_destroy grid={gridId}");
+                        }
                     }
                     break;
 
@@ -213,7 +249,9 @@ public sealed class LineGridModel
                             ToInt(a.ElementAtOrDefault(4)),
                             level,
                             string.Empty,
-                            true);
+                            true,
+                            NormalizeMessageChunks(a.ElementAtOrDefault(0)));
+                        GuiLogger.Debug(GuiLogCategory.Cmdline, () => $"cmdline_show level={level} text={Sanitize(_cmdlines[level].Text)} pos={_cmdlines[level].Position} first={_cmdlines[level].FirstChar} prompt={_cmdlines[level].Prompt} indent={_cmdlines[level].Indent}");
                     }
                     break;
 
@@ -224,6 +262,7 @@ public sealed class LineGridModel
                         var level = Math.Max(1, ToInt(a.ElementAtOrDefault(1)));
                         if (_cmdlines.TryGetValue(level, out var state))
                             _cmdlines[level] = state with { Position = ToInt(a.ElementAtOrDefault(0)) };
+                        GuiLogger.Debug(GuiLogCategory.Cmdline, () => $"cmdline_pos level={level} pos={ToInt(a.ElementAtOrDefault(0))}");
                     }
                     break;
 
@@ -238,6 +277,7 @@ public sealed class LineGridModel
                             SpecialChar = Decode(a.ElementAtOrDefault(0)),
                             SpecialShift = ToBool(a.ElementAtOrDefault(1))
                         };
+                        GuiLogger.Debug(GuiLogCategory.Cmdline, () => $"cmdline_special_char level={level} char={Sanitize(Decode(a.ElementAtOrDefault(0)))} shift={ToBool(a.ElementAtOrDefault(1))}");
                     }
                     break;
 
@@ -246,12 +286,19 @@ public sealed class LineGridModel
                     {
                         var level = Math.Max(1, ToInt(Normalize(item).ElementAtOrDefault(0)));
                         _cmdlines.Remove(level);
+                        GuiLogger.Debug(GuiLogCategory.Cmdline, () => $"cmdline_hide level={level}");
                     }
                     break;
 
                 case "popupmenu_show":
                     foreach (var item in args)
+                    {
                         PopupMenuState = ParsePopupMenuState(Normalize(item), PopupMenuState);
+                        if (PopupMenuState is not null)
+                        {
+                            GuiLogger.Debug(GuiLogCategory.PopupMenu, () => $"popupmenu_show items={PopupMenuState.Items.Count} selected={PopupMenuState.Selected} grid={PopupMenuState.Grid} row={PopupMenuState.Row} col={PopupMenuState.Col} anchor={PopupMenuState.AnchorKind} cmdline={PopupMenuState.IsCmdline}");
+                        }
+                    }
                     break;
 
                 case "popupmenu_select":
@@ -260,11 +307,13 @@ public sealed class LineGridModel
                         if (PopupMenuState is null) continue;
                         var selected = ToInt(Normalize(item).ElementAtOrDefault(0));
                         PopupMenuState = PopupMenuState with { Selected = selected };
+                        GuiLogger.Debug(GuiLogCategory.PopupMenu, () => $"popupmenu_select selected={selected}");
                     }
                     break;
 
                 case "popupmenu_hide":
                     PopupMenuState = null;
+                    GuiLogger.Debug(GuiLogCategory.PopupMenu, () => "popupmenu_hide");
                     break;
 
                 case "tabline_update":
@@ -309,6 +358,8 @@ public sealed class LineGridModel
                         else _messageEntries.Add(entry);
                         while (_messages.Count > 12) _messages.RemoveAt(0);
                         while (_messageEntries.Count > 12) _messageEntries.RemoveAt(0);
+                        _transientMessageGeneration++;
+                        GuiLogger.Debug(GuiLogCategory.Message, () => $"msg_show kind={kind} replace={replaceLast} text={Sanitize(text)}");
                     }
                     break;
 
@@ -318,6 +369,7 @@ public sealed class LineGridModel
                         var a = Normalize(item);
                         MessageGridId = ToInt(a.ElementAtOrDefault(0));
                         MessageGridRow = ToInt(a.ElementAtOrDefault(1));
+                        GuiLogger.Debug(GuiLogCategory.Message, () => $"msg_set_pos grid={MessageGridId} row={MessageGridRow}");
                     }
                     break;
 
@@ -337,6 +389,7 @@ public sealed class LineGridModel
                     break;
 
                 case "msg_history_show":
+                    _historyVisible = true;
                     _historyEntries.Clear();
                     foreach (var item in args)
                     {
@@ -376,6 +429,7 @@ public sealed class LineGridModel
                     break;
 
                 case "msg_history_clear":
+                    _historyVisible = false;
                     _historyEntries.Clear();
                     _messageEntries.Clear();
                     _messages.Clear();
@@ -395,18 +449,22 @@ public sealed class LineGridModel
                         foreach (var line in lines)
                             _cmdlineBlock.Add(ChunksToText(line));
                     }
+                    GuiLogger.Debug(GuiLogCategory.Cmdline, () => $"cmdline_block_show lines={_cmdlineBlock.Count}");
                     break;
 
                 case "cmdline_block_append":
                     foreach (var item in args)
                         _cmdlineBlock.Add(ChunksToText(Normalize(item).ElementAtOrDefault(0)));
+                    GuiLogger.Debug(GuiLogCategory.Cmdline, () => $"cmdline_block_append lines={_cmdlineBlock.Count}");
                     break;
 
                 case "cmdline_block_hide":
                     _cmdlineBlock.Clear();
+                    GuiLogger.Debug(GuiLogCategory.Cmdline, () => "cmdline_block_hide");
                     break;
 
                 case "msg_clear":
+                    _historyVisible = false;
                     _messages.Clear();
                     _messageEntries.Clear();
                     _historyEntries.Clear();
@@ -416,18 +474,38 @@ public sealed class LineGridModel
                     Ruler = string.Empty;
                     MessageGridId = null;
                     MessageGridRow = null;
+                    _transientMessageGeneration++;
                     break;
 
                 case "busy_start":
                     CursorVisible = false;
                     break;
 
-                case "busy_stop":
-                    CursorVisible = true;
-                    break;
+                    case "busy_stop":
+                        CursorVisible = true;
+                        break;
+                }
+            }
+            catch (Exception ex)
+            {
+                GuiLogger.Error(GuiLogCategory.RedrawEvent, () => $"redraw handler failed name={name} error={ex}");
             }
         }
 
+        Changed?.Invoke();
+    }
+
+    public void ClearTransientMessagesIfGeneration(int generation)
+    {
+        if (generation != _transientMessageGeneration || _messageEntries.Count == 0 || _historyVisible)
+            return;
+
+        _messages.Clear();
+        _messageEntries.Clear();
+        MessageGridId = null;
+        MessageGridRow = null;
+        _transientMessageGeneration++;
+        GuiLogger.Debug(GuiLogCategory.Message, () => $"transient messages cleared generation={generation}");
         Changed?.Invoke();
     }
 
@@ -449,6 +527,7 @@ public sealed class LineGridModel
             Rows = rows;
             _grid = next;
         }
+        GuiLogger.Debug(GuiLogCategory.Resize, () => $"grid_resize grid={gridId} cols={cols} rows={rows}");
     }
 
     private void Clear(int gridId)
@@ -659,7 +738,9 @@ public sealed class LineGridModel
             ToInt(a.ElementAtOrDefault(3)),
             ToInt(a.ElementAtOrDefault(4)),
             previous?.Visible ?? true,
-            items.Count > 0);
+            items.Count > 0,
+            ToInt(a.ElementAtOrDefault(4)) == -1 ? "Cmdline" : "Grid",
+            ToInt(a.ElementAtOrDefault(4)) == -1);
     }
 
     private static TablineState ParseTablineState(object?[] a)
@@ -915,6 +996,11 @@ public sealed class LineGridModel
         _ => 0
     };
 
+    private static string Sanitize(string value)
+        => value
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
+
     private static string? ToHex(object? v) => NvimRpcClient.ToJsonable(v) switch
     {
         int i => $"#{i & 0xFFFFFF:X6}".ToLowerInvariant(),
@@ -931,7 +1017,8 @@ public sealed record CmdlineState(
     int Indent,
     int Level,
     string SpecialChar,
-    bool SpecialShift);
+    bool SpecialShift,
+    IReadOnlyList<MessageChunk> Chunks);
 
 public sealed record PopupMenuItem(string Word, string Kind, string Menu, string Info);
 
@@ -946,7 +1033,9 @@ public sealed record PopupMenuState(
     int Col,
     int Grid,
     bool Visible,
-    bool HasItems);
+    bool HasItems,
+    string AnchorKind,
+    bool IsCmdline);
 
 public sealed record TablineTab(string Id, int Index, string Label, bool Current, bool Changed);
 
@@ -983,7 +1072,15 @@ public sealed class GridState(int id)
     public int Cols { get; set; }
     public int Row { get; set; }
     public int Col { get; set; }
+    public int RenderRow { get; set; }
+    public int RenderCol { get; set; }
+    public int AnchorGrid { get; set; } = 1;
+    public int AnchorRow { get; set; }
+    public int AnchorCol { get; set; }
+    public string FloatAnchor { get; set; } = "NW";
+    public bool Focusable { get; set; } = true;
     public int ZIndex { get; set; }
+    public int EffectiveZIndex => Floating ? 1000 + ZIndex : ZIndex;
     public bool Visible { get; set; }
     public bool Floating { get; set; }
     public GridCell[][] Cells { get; set; } = Array.Empty<GridCell[]>();
