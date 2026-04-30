@@ -59,6 +59,25 @@ public sealed class LineGridModel
     public bool HistoryVisible => _historyVisible;
     public int TransientMessageGeneration => _transientMessageGeneration;
     public int EditorTopOffset => TablineState.Tabs.Count > 0 ? 1 : 0;
+    public bool HasPrimaryGridBottomRowContent()
+    {
+        if (!_grids.TryGetValue(1, out var grid) || grid.Rows == 0 || grid.Cols == 0)
+            return false;
+
+        var row = grid.Rows - 1;
+        for (var col = 0; col < grid.Cols; col++)
+        {
+            var cell = grid.Cells[row][col];
+            if (cell.Continue)
+                continue;
+
+            if (!string.IsNullOrWhiteSpace(cell.Ch))
+                return true;
+        }
+
+        return false;
+    }
+
     public IEnumerable<GridState> VisibleGrids => _grids.Values
         .Where(g => g.Visible && (!MessageGridId.HasValue || g.Id != MessageGridId.Value))
         .OrderBy(g => g.EffectiveZIndex)
@@ -561,63 +580,20 @@ public sealed class LineGridModel
             var repeat = Math.Max(1, cell.Count >= 3 && cell[2] is not null ? ToInt(cell[2]) : 1);
             lastHl = hl;
 
-            if (gridId == 1
-                && row == g.Rows - 1
-                && col > 0
-                && col - 1 < g.Cols
-                && g.Cells[row][col - 1].Continue)
-            {
-                var leadingRunes = text.EnumerateRunes().ToArray();
-                if (leadingRunes.Length == 1 && leadingRunes[0].Value == ' ')
-                {
-                    repeat--;
-                    if (repeat <= 0)
-                        continue;
-                }
-                else if (leadingRunes.Length > 0 && leadingRunes[0].Value == ' ')
-                {
-                    text = string.Concat(leadingRunes.Skip(1).Select(r => r.ToString()));
-                    if (text.Length == 0)
-                        continue;
-                }
-            }
-
-            var runes = text.EnumerateRunes().ToArray();
             for (var rep = 0; rep < repeat; rep++)
             {
-                if (runes.Length == 0)
+                if (text.Length == 0)
                 {
-                    SetCellSpan(g, row, ref col, " ", hl, 1);
+                    SetCell(g, row, ref col, string.Empty, hl, continuation: true);
                     continue;
                 }
 
-                for (var runeIndex = 0; runeIndex < runes.Length; runeIndex++)
-                {
-                    var rune = runes[runeIndex];
-                    var ch = rune.ToString();
-                    var span = IsWideRune(rune) ? 2 : 1;
-                    SetCellSpan(g, row, ref col, ch, hl, span);
-
-                    // Neovim's statusline row can already include a placeholder space
-                    // after a wide glyph. If we also expand the glyph to 2 cells,
-                    // that placeholder turns into an extra visible gap.
-                    if (gridId == 1
-                        && row == g.Rows - 1
-                        && span == 2
-                        && runeIndex + 1 < runes.Length
-                        && runes[runeIndex + 1].Value == ' ')
-                    {
-                        runeIndex++;
-                    }
-                }
+                SetCell(g, row, ref col, text, hl, continuation: false);
             }
         }
 
         if (gridId == 1 && row == g.Rows - 1)
-        {
-            CompactStatuslineWidePlaceholders(g, row);
             TraceStatuslineRow(g, row);
-        }
     }
 
     private void ApplyScroll(object?[] a)
@@ -664,22 +640,13 @@ public sealed class LineGridModel
         }
     }
 
-    private void SetCellSpan(GridState g, int row, ref int col, string ch, int hl, int span)
+    private void SetCell(GridState g, int row, ref int col, string ch, int hl, bool continuation)
     {
         if (!InRange(g, row, col)) return;
-        span = Math.Max(1, span);
-        g.Cells[row][col].Ch = string.IsNullOrEmpty(ch) ? " " : ch;
+        g.Cells[row][col].Ch = continuation ? string.Empty : string.IsNullOrEmpty(ch) ? " " : ch;
         g.Cells[row][col].Hl = hl;
-        g.Cells[row][col].Continue = false;
-
-        for (var i = 1; i < span && col + i < g.Cols; i++)
-        {
-            g.Cells[row][col + i].Ch = string.Empty;
-            g.Cells[row][col + i].Hl = hl;
-            g.Cells[row][col + i].Continue = true;
-        }
-
-        col += span;
+        g.Cells[row][col].Continue = continuation;
+        col++;
     }
 
     private void CopyCell(GridState g, int sr, int sc, int dr, int dc)
@@ -822,61 +789,6 @@ public sealed class LineGridModel
     }
 
     private static bool InRange(GridState g, int row, int col) => row >= 0 && row < g.Rows && col >= 0 && col < g.Cols;
-
-    private static bool IsWideRune(Rune rune)
-    {
-        var value = rune.Value;
-        return value is
-            >= 0x1100 and <= 0x115F or
-            >= 0x2329 and <= 0x232A or
-            >= 0x2E80 and <= 0xA4CF or
-            >= 0xAC00 and <= 0xD7A3 or
-            >= 0xF900 and <= 0xFAFF or
-            >= 0xFE10 and <= 0xFE19 or
-            >= 0xFE30 and <= 0xFE6F or
-            >= 0xFF00 and <= 0xFF60 or
-            >= 0xFFE0 and <= 0xFFE6 or
-            >= 0x1F300 and <= 0x1FAFF or
-            >= 0x20000 and <= 0x3FFFD;
-    }
-
-    private static void CompactStatuslineWidePlaceholders(GridState grid, int row)
-    {
-        var changed = true;
-        while (changed)
-        {
-            changed = false;
-            for (var col = 0; col < grid.Cols - 3; col++)
-            {
-                var current = grid.Cells[row][col];
-                var cont = grid.Cells[row][col + 1];
-                var space = grid.Cells[row][col + 2];
-                var next = grid.Cells[row][col + 3];
-
-                if (current.Continue || string.IsNullOrEmpty(current.Ch) || current.Ch == " ")
-                    continue;
-                if (!cont.Continue)
-                    continue;
-                if (space.Continue || space.Ch != " " || space.Hl != current.Hl)
-                    continue;
-                if (next.Continue || string.IsNullOrEmpty(next.Ch) || next.Ch == " " || next.Hl != current.Hl)
-                    continue;
-
-                for (var shift = col + 2; shift < grid.Cols - 1; shift++)
-                {
-                    grid.Cells[row][shift].Ch = grid.Cells[row][shift + 1].Ch;
-                    grid.Cells[row][shift].Hl = grid.Cells[row][shift + 1].Hl;
-                    grid.Cells[row][shift].Continue = grid.Cells[row][shift + 1].Continue;
-                }
-
-                grid.Cells[row][grid.Cols - 1].Ch = " ";
-                grid.Cells[row][grid.Cols - 1].Hl = 0;
-                grid.Cells[row][grid.Cols - 1].Continue = false;
-                changed = true;
-                break;
-            }
-        }
-    }
 
     private static void TraceStatuslineRow(GridState grid, int row)
     {

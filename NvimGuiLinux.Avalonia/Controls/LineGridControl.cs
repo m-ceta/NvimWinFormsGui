@@ -5,6 +5,7 @@ using Avalonia.Media;
 using Avalonia.Threading;
 using NvimGuiCommon.Diagnostics;
 using NvimGuiCommon.Editor;
+using System.Text;
 
 namespace NvimGuiLinux.Avalonia.Controls;
 
@@ -13,22 +14,35 @@ public sealed class LineGridControl : EditorLayerControl
     private EditorController? _editor;
     private CancellationTokenSource? _resizeCts;
     private bool _leftDown;
+    private string _preeditText = string.Empty;
+    private int? _preeditCursorOffset;
+    private Rect _lastImeCursorRect;
+    private bool _hasLastImeCursorRect;
     private readonly List<TabHitTarget> _tabHitTargets = new();
-    private readonly TextInputMethodClient _textInputMethodClient;
+    private readonly NvimTextInputMethodClient _textInputMethodClient;
 
     public LineGridControl()
     {
         _textInputMethodClient = new NvimTextInputMethodClient(this);
         Focusable = true;
         IsHitTestVisible = true;
+        TextInputOptions.SetContentType(this, TextInputContentType.Normal);
         TextInputMethodClientRequested += (_, e) =>
         {
-            GuiLogger.Debug(GuiLogCategory.TextInput, () => "TextInputMethodClientRequested");
+            GuiLogger.Debug(GuiLogCategory.TextInput, () => $"TextInputMethodClientRequested cursor={FormatRect(_textInputMethodClient.CursorRectangle)}");
             e.Client = _textInputMethodClient;
         };
         SizeChanged += (_, _) => ScheduleResize();
-        GotFocus += (_, _) => GuiLogger.Info(GuiLogCategory.Focus, () => "EditorGrid focus gained");
-        LostFocus += (_, _) => GuiLogger.Info(GuiLogCategory.Focus, () => "EditorGrid focus lost");
+        GotFocus += (_, _) =>
+        {
+            GuiLogger.Info(GuiLogCategory.Focus, () => "EditorGrid focus gained");
+            GuiLogger.Debug(GuiLogCategory.TextInput, () => $"EditorGrid focus cursor={FormatRect(_textInputMethodClient.CursorRectangle)}");
+        };
+        LostFocus += (_, _) =>
+        {
+            ClearPreedit();
+            GuiLogger.Info(GuiLogCategory.Focus, () => "EditorGrid focus lost");
+        };
     }
 
     public void Bind(EditorController editor, LineGridModel model)
@@ -46,35 +60,58 @@ public sealed class LineGridControl : EditorLayerControl
         if (Model is null)
             return;
 
-        MeasureCell();
+        var layout = CreateLayoutSnapshot();
         context.FillRectangle(ToBrush(Model.DefaultBackground), new Rect(0, 0, Bounds.Width, Bounds.Height));
 
         foreach (var grid in Model.VisibleGrids.Where(g => !g.Floating))
+        {
+            GuiLogger.Debug(
+                GuiLogCategory.Render,
+                () => $"GridRender grid={grid.Id} row={grid.Row} col={grid.Col} rows={grid.Rows} cols={grid.Cols} tail={DescribeTailRows(grid, 3)}");
             RenderGrid(context, grid, drawShadow: false);
+        }
 
-        RenderTabline(context);
+        RenderTabline(context, layout);
 
         if (Model.Grids.TryGetValue(Model.CursorGrid, out var cursorGrid) && cursorGrid.Visible && !cursorGrid.Floating)
             RenderCursorOnGrid(context, cursorGrid);
+
+        RenderPreedit(context);
+        PublishImeCursorRectIfChanged();
     }
 
     protected override bool IsSpecialGridRow(GridState grid, int row)
-        => Model is not null
-           && grid.Id == 1
-           && row == grid.Rows - 1
-           && grid.Rows == Model.Rows;
+    {
+        if (Model is null || grid.Id != 1 || grid.Rows != Model.Rows)
+            return false;
+
+        var statuslineRow = GetStatuslineRow(grid);
+        return row == statuslineRow;
+    }
 
     protected override void RenderSpecialGridRow(DrawingContext context, GridState grid, int row, double left, double y)
     {
-        try
+        if (row >= 0 && row < grid.Cells.Length)
         {
-            RenderStatuslineRow(context, grid, row, left, y);
+            var text = string.Concat(grid.Cells[row].Where(cell => !cell.Continue && !string.IsNullOrEmpty(cell.Ch)).Select(cell => cell.Ch));
+            GuiLogger.Debug(GuiLogCategory.Render, () => $"GridStatusLine text={text} runs={DescribeResolvedTextRuns(text, null)}");
+            GuiLogger.Debug(GuiLogCategory.Render, () => $"GridStatusLine cells={DescribeLeadingCells(grid, row, 24)}");
         }
-        catch (Exception ex)
+
+        for (var col = 0; col < grid.Cells[row].Length; col++)
         {
-            GuiLogger.Error(GuiLogCategory.Render, () => $"statusline render failed row={row} error={ex.Message}");
-            RenderPlainRow(context, grid, row, left, y);
+            var x = left + (col * CellWidth);
+            if (x >= Bounds.Width)
+                break;
+            if (x + CellWidth <= 0)
+                continue;
+
+            var cell = grid.Cells[row][col];
+            var (_, bg, _) = GetStyle(cell.Hl);
+            context.FillRectangle(ToBrush(bg), new Rect(x, y, CellWidth, CellHeight));
         }
+
+        DrawSpecialGridRowForeground(context, grid, row, left, y);
     }
 
     protected override void OnMetricsChanged()
@@ -93,6 +130,7 @@ public sealed class LineGridControl : EditorLayerControl
             return;
 
         GuiLogger.Debug(GuiLogCategory.TextInput, () => $"TextInput text={Sanitize(e.Text)} handled_before={e.Handled}");
+        ClearPreedit();
         await _editor.InputAsync(e.Text, false);
         e.Handled = true;
         GuiLogger.Debug(GuiLogCategory.TextInput, () => $"TextInput text={Sanitize(e.Text)} handled_after={e.Handled}");
@@ -110,7 +148,15 @@ public sealed class LineGridControl : EditorLayerControl
             () => $"KeyDown key={e.Key} symbol={e.KeySymbol} modifiers={e.KeyModifiers} mapped={(mapped?.data ?? "<none>")} termcode={(mapped?.termcode ?? false)} handled_before={e.Handled}");
 
         if (mapped is null)
+        {
+            if (!string.IsNullOrEmpty(e.KeySymbol))
+            {
+                GuiLogger.Debug(
+                    GuiLogCategory.TextInput,
+                    () => $"KeyDown passthrough key={e.Key} symbol={Sanitize(e.KeySymbol)} modifiers={e.KeyModifiers} handled={e.Handled}");
+            }
             return;
+        }
 
         e.Handled = true;
         await _editor.InputAsync(mapped.Value.data, mapped.Value.termcode);
@@ -258,9 +304,10 @@ public sealed class LineGridControl : EditorLayerControl
         if (_editor is null || Model is null || Bounds.Width <= 0 || Bounds.Height <= 0)
             return;
 
-        MeasureCell();
         var cols = Math.Max(2, (int)Math.Floor(Bounds.Width / Math.Max(1, CellWidth)));
-        var reservedBottomRows = 1;
+        // ext_cmdline/statusline are drawn from Neovim grid state and overlay controls,
+        // so reserving an extra bottom row here creates a visible gap.
+        var reservedBottomRows = 0;
         var rows = Math.Max(
             2,
             (int)Math.Floor(Bounds.Height / Math.Max(1, CellHeight))
@@ -339,13 +386,13 @@ public sealed class LineGridControl : EditorLayerControl
         };
     }
 
-    private void RenderTabline(DrawingContext context)
+    private void RenderTabline(DrawingContext context, EditorLayoutSnapshot layout)
     {
         if (Model is null || Model.TablineState.Tabs.Count == 0)
             return;
 
         _tabHitTargets.Clear();
-        var topInset = GetEditorTopInset();
+        var topInset = layout.EditorTopInset;
         var rect = new Rect(0, 0, Bounds.Width, Math.Max(1, topInset));
         context.FillRectangle(ToBrush(BlendColor(Model.DefaultBackground, "#ffffff", 0.06)), rect);
         context.DrawLine(new Pen(ToBrush("#ffffff1f"), 1), rect.BottomLeft, rect.BottomRight);
@@ -497,12 +544,15 @@ public sealed class LineGridControl : EditorLayerControl
             return;
 
         context.FillRectangle(ToBrush(background), new Rect(x, y, width, CellHeight));
-        var formatted = CreateFormattedText(text, style, ToBrush(foreground));
-        var drawX = Math.Max(0, Math.Min(x, Math.Max(0, Bounds.Width - 1)));
-        var drawY = y + Math.Round((CellHeight - formatted.Height) / 2);
-        var clipRect = new Rect(drawX, y, Math.Max(1, Math.Min(width + 4, Bounds.Width - drawX)), CellHeight);
+        var brush = ToBrush(foreground);
+        var measurement = MeasureResolvedTextRuns(text, style);
+        var leftPadding = 3d;
+        var drawX = Math.Max(0, Math.Min(x - leftPadding, Math.Max(0, Bounds.Width - 1)));
+        var drawY = y + Math.Round((CellHeight - measurement.height) / 2);
+        var clipWidth = Math.Max(width + 12, measurement.width + leftPadding + 6);
+        var clipRect = new Rect(drawX, y, Math.Max(1, Math.Min(clipWidth, Bounds.Width - drawX)), CellHeight);
         using (context.PushClip(clipRect))
-            context.DrawText(formatted, new Point(drawX, drawY));
+            DrawResolvedTextRuns(context, text, style, brush, new Point(drawX + leftPadding, drawY));
         DrawCellDecorations(context, drawX, y, width, foreground, style);
     }
 
@@ -544,13 +594,216 @@ public sealed class LineGridControl : EditorLayerControl
         return name[..Math.Min(3, name.Length)];
     }
 
+    private static string DescribeLeadingCells(GridState grid, int row, int maxCells)
+    {
+        if (row < 0 || row >= grid.Cells.Length)
+            return string.Empty;
+
+        var parts = new List<string>(maxCells);
+        var cells = grid.Cells[row];
+        for (var col = 0; col < cells.Length && col < maxCells; col++)
+        {
+            var cell = cells[col];
+            var text = cell.Continue
+                ? "<cont>"
+                : string.IsNullOrEmpty(cell.Ch)
+                    ? "<empty>"
+                    : Sanitize(cell.Ch).Replace(" ", "<sp>", StringComparison.Ordinal);
+            var codepoints = cell.Continue || string.IsNullOrEmpty(cell.Ch)
+                ? string.Empty
+                : string.Join(",", cell.Ch.EnumerateRunes().Select(r => $"U+{r.Value:X4}"));
+            parts.Add($"[{col}:{text}|hl={cell.Hl}|cp={codepoints}]");
+        }
+
+        return string.Join(" ", parts);
+    }
+
+    private static string DescribeRowText(GridState grid, int row)
+    {
+        if (row < 0 || row >= grid.Cells.Length)
+            return string.Empty;
+
+        var text = string.Concat(
+            grid.Cells[row]
+                .Where(cell => !cell.Continue)
+                .Select(cell => string.IsNullOrEmpty(cell.Ch) ? " " : cell.Ch));
+
+        return Sanitize(text).Replace(" ", "<sp>", StringComparison.Ordinal);
+    }
+
+    private static string DescribeTailRows(GridState grid, int count)
+    {
+        if (grid.Rows <= 0)
+            return string.Empty;
+
+        var start = Math.Max(0, grid.Rows - count);
+        var parts = new List<string>(count);
+        for (var row = start; row < grid.Rows; row++)
+            parts.Add($"{row}:{DescribeRowText(grid, row)}");
+        return string.Join(" || ", parts);
+    }
+
+    private void DrawSpecialGridRowForeground(DrawingContext context, GridState grid, int row, double left, double y)
+    {
+        RenderPlainRow(context, grid, row, left, y);
+    }
+
+    private int GetStatuslineRow(GridState grid)
+    {
+        var lastRow = grid.Rows - 1;
+        if (lastRow <= 0)
+            return lastRow;
+
+        return HasRenderableContent(grid, lastRow) ? lastRow : lastRow - 1;
+    }
+
+    private static bool HasRenderableContent(GridState grid, int row)
+    {
+        if (row < 0 || row >= grid.Cells.Length)
+            return false;
+
+        foreach (var cell in grid.Cells[row])
+        {
+            if (cell.Continue)
+                continue;
+            if (!string.IsNullOrWhiteSpace(cell.Ch))
+                return true;
+        }
+
+        return false;
+    }
+
+    private void RenderPreedit(DrawingContext context)
+    {
+        if (string.IsNullOrEmpty(_preeditText) || Model is null)
+            return;
+
+        if (!TryGetPreeditStartRect(out var preeditStartRect))
+            return;
+
+        var widthInCells = Math.Max(1, CountDisplayCells(_preeditText));
+        var preeditRect = new Rect(
+            preeditStartRect.X,
+            preeditStartRect.Y,
+            Math.Min(Bounds.Width - preeditStartRect.X, widthInCells * CellWidth),
+            CellHeight);
+
+        var background = BlendColor(Model.DefaultBackground, "#ffffff", 0.10);
+        var foreground = Model.DefaultForeground;
+        context.FillRectangle(ToBrush(background), preeditRect);
+
+        var formatted = CreateFormattedText(_preeditText, style: null, ToBrush(foreground));
+        var textY = preeditRect.Y + Math.Round((CellHeight - formatted.Height) / 2);
+        using (context.PushClip(preeditRect))
+            context.DrawText(formatted, new Point(preeditRect.X, textY));
+
+        var underlineY = preeditRect.Bottom - 2;
+        context.DrawLine(new Pen(ToBrush(foreground), 1), new Point(preeditRect.X, underlineY), new Point(preeditRect.Right, underlineY));
+
+        var caretX = preeditRect.X + (CountDisplayCells(GetPreeditPrefix()) * CellWidth);
+        context.DrawLine(new Pen(ToBrush(foreground), 1), new Point(caretX, preeditRect.Y + 1), new Point(caretX, preeditRect.Bottom - 1));
+    }
+
+    private bool TryGetPreeditStartRect(out Rect rect)
+    {
+        rect = default;
+        if (Model is null || !Model.Grids.TryGetValue(Model.CursorGrid, out var cursorGrid) || !cursorGrid.Visible)
+            return false;
+
+        var gridLeft = GetGridLeft(cursorGrid);
+        var gridTop = GetGridTop(cursorGrid);
+        rect = new Rect(gridLeft + (Model.CursorCol * CellWidth), gridTop + (Model.CursorRow * CellHeight), CellWidth, CellHeight);
+        return true;
+    }
+
+    private Rect GetImeCaretRect()
+    {
+        if (Model is null || !Model.Grids.TryGetValue(Model.CursorGrid, out var cursorGrid) || !cursorGrid.Visible)
+            return default;
+
+        var gridLeft = GetGridLeft(cursorGrid);
+        var gridTop = GetGridTop(cursorGrid);
+        var col = Model.CursorCol + CountDisplayCells(GetPreeditPrefix());
+        return new Rect(
+            gridLeft + (col * CellWidth),
+            gridTop + CellHeight + (Model.CursorRow * CellHeight),
+            Math.Max(1, Math.Round(CellWidth * 0.14d)),
+            1);
+    }
+
+    private void PublishImeCursorRectIfChanged()
+    {
+        var rect = GetImeCaretRect();
+        if (_hasLastImeCursorRect && rect == _lastImeCursorRect)
+            return;
+
+        _lastImeCursorRect = rect;
+        _hasLastImeCursorRect = true;
+        _textInputMethodClient.NotifyCursorRectangleChanged();
+    }
+
+    private void UpdatePreedit(string? text, int? cursorOffset)
+    {
+        _preeditText = text ?? string.Empty;
+        _preeditCursorOffset = cursorOffset;
+        GuiLogger.Debug(GuiLogCategory.TextInput, () => $"Preedit text={Sanitize(_preeditText)} cursorOffset={_preeditCursorOffset?.ToString() ?? "<null>"}");
+        PublishImeCursorRectIfChanged();
+        InvalidateVisual();
+    }
+
+    private void ClearPreedit()
+    {
+        if (string.IsNullOrEmpty(_preeditText) && _preeditCursorOffset is null)
+            return;
+
+        _preeditText = string.Empty;
+        _preeditCursorOffset = null;
+        GuiLogger.Debug(GuiLogCategory.TextInput, () => "Preedit cleared");
+        PublishImeCursorRectIfChanged();
+        InvalidateVisual();
+    }
+
+    private string GetPreeditPrefix()
+    {
+        if (string.IsNullOrEmpty(_preeditText) || _preeditCursorOffset is null)
+            return string.Empty;
+
+        var clamped = Math.Clamp(_preeditCursorOffset.Value, 0, _preeditText.Length);
+        return _preeditText[..clamped];
+    }
+
+    private static int CountDisplayCells(string text)
+    {
+        var cells = 0;
+        foreach (var rune in text.EnumerateRunes())
+            cells += IsWideRune(rune) ? 2 : 1;
+        return cells;
+    }
+
+    private static bool IsWideRune(Rune rune)
+    {
+        var value = rune.Value;
+        return value is
+            >= 0x1100 and <= 0x115F or
+            >= 0x2329 and <= 0x232A or
+            >= 0x2E80 and <= 0xA4CF or
+            >= 0xAC00 and <= 0xD7A3 or
+            >= 0xF900 and <= 0xFAFF or
+            >= 0xFE10 and <= 0xFE19 or
+            >= 0xFE30 and <= 0xFE6F or
+            >= 0xFF00 and <= 0xFF60 or
+            >= 0xFFE0 and <= 0xFFE6 or
+            >= 0x1F300 and <= 0x1FAFF or
+            >= 0x20000 and <= 0x3FFFD;
+    }
+
     private sealed record TabHitTarget(int Index, bool CloseButton, Rect Rect);
 
     private sealed class NvimTextInputMethodClient(LineGridControl owner) : TextInputMethodClient
     {
         public override Visual TextViewVisual => owner;
 
-        public override bool SupportsPreedit => false;
+        public override bool SupportsPreedit => true;
 
         public override bool SupportsSurroundingText => false;
 
@@ -562,17 +815,20 @@ public sealed class LineGridControl : EditorLayerControl
         {
             get
             {
-                owner.MeasureCell();
                 var row = owner.Model?.CursorRow ?? 0;
-                var col = owner.Model?.CursorCol ?? 0;
-                var gridTop = owner.GetEditorTopInset() + (row * owner.CellHeight);
-                var gridLeft = col * owner.CellWidth;
-                return new Rect(
-                    gridLeft,
-                    gridTop,
-                    Math.Max(1, Math.Round(owner.CellWidth * 0.14d)),
-                    Math.Max(1, owner.CellHeight));
+                var col = (owner.Model?.CursorCol ?? 0) + CountDisplayCells(owner.GetPreeditPrefix());
+                var rect = owner.GetImeCaretRect();
+                GuiLogger.Debug(GuiLogCategory.TextInput, () => $"IME cursor row={row} col={col} rect={FormatRect(rect)}");
+                return rect;
             }
         }
+
+        public void NotifyCursorRectangleChanged() => RaiseCursorRectangleChanged();
+
+        public override void SetPreeditText(string? preeditText)
+            => owner.UpdatePreedit(preeditText, null);
+
+        public override void SetPreeditText(string? preeditText, int? cursorPosition)
+            => owner.UpdatePreedit(preeditText, cursorPosition);
     }
 }

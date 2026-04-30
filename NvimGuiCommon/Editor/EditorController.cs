@@ -45,6 +45,8 @@ public sealed class EditorController : IDisposable
     public Task InputAsync(string input, bool isTermcode)
     {
         GuiLogger.Debug(GuiLogCategory.Keyboard, () => $"EditorController.InputAsync data={Sanitize(input)} termcode={isTermcode}");
+        if (!isTermcode)
+            GuiLogger.Debug(GuiLogCategory.TextInput, () => $"EditorController.InputAsync data={Sanitize(input)} termcode={isTermcode}");
         return _session.InputAsync(input, isTermcode);
     }
 

@@ -11,8 +11,10 @@ namespace NvimGuiLinux.Avalonia.Controls;
 
 public abstract class EditorLayerControl : Control
 {
+    private const string DefaultEditorFontFamily = "Sarasa Mono J, Noto Sans Mono CJK JP, Noto Sans Mono, BIZ UDGothic, MS Gothic, IPAGothic, VL Gothic, DejaVu Sans Mono, monospace";
+
     public static readonly StyledProperty<string> FontFamilyNameProperty =
-        AvaloniaProperty.Register<EditorLayerControl, string>(nameof(FontFamilyName), "DejaVu Sans Mono, Noto Sans Mono, Noto Sans Mono CJK JP, monospace");
+        AvaloniaProperty.Register<EditorLayerControl, string>(nameof(FontFamilyName), DefaultEditorFontFamily);
 
     public static readonly StyledProperty<double> FontSizeProperty =
         AvaloniaProperty.Register<EditorLayerControl, double>(nameof(FontSize), 14d);
@@ -30,6 +32,9 @@ public abstract class EditorLayerControl : Control
         AvaloniaProperty.Register<EditorLayerControl, double>(nameof(FixedCellHeight), 18d);
 
     private Action? _changedHandler;
+    private static readonly Dictionary<string, EditorRenderMetrics> MetricsCache = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, Typeface> TypefaceMatchCache = new(StringComparer.Ordinal);
+    private EditorRenderMetrics? _metrics;
 
     protected EditorLayerControl()
     {
@@ -50,10 +55,11 @@ public abstract class EditorLayerControl : Control
     }
 
     protected LineGridModel? Model { get; private set; }
-    protected FontFamily FontFamilyRef { get; private set; } = new("DejaVu Sans Mono, Noto Sans Mono, Noto Sans Mono CJK JP, monospace");
-    protected double CellWidth { get; private set; } = 8;
-    protected double CellHeight { get; private set; } = 18;
+    protected FontFamily FontFamilyRef => Metrics.FontFamily;
+    protected double CellWidth => Metrics.CellWidth;
+    protected double CellHeight => Metrics.CellHeight;
     protected double OverlayTextInset { get; } = 8;
+    private EditorRenderMetrics Metrics => _metrics ??= ComputeMetrics();
 
     public string FontFamilyName
     {
@@ -122,26 +128,13 @@ public abstract class EditorLayerControl : Control
 
     protected virtual void OnMetricsChanged()
     {
-        MeasureCell();
+        _metrics = ComputeMetrics();
         InvalidateVisual();
     }
 
     protected void MeasureCell()
     {
-        FontFamilyRef = new FontFamily(FontFamilyName);
-        if (UseFixedCellMetrics)
-        {
-            CellWidth = Math.Max(1, FixedCellWidth);
-            CellHeight = Math.Max(1, FixedCellHeight);
-            return;
-        }
-
-        var probeTypeface = new Typeface(FontFamilyRef);
-        var narrowProbe = CreateFormattedText("0", probeTypeface, Brushes.White);
-        var asciiProbe = CreateFormattedText("abcdefghijklmnopqrstuvwxyz", probeTypeface, Brushes.White);
-        var narrowWidth = Math.Max(narrowProbe.Width, asciiProbe.Width / 26d);
-        CellWidth = Math.Max(1, Math.Round(narrowWidth, 2));
-        CellHeight = Math.Max(1, Math.Round(FontSize * (Math.Max(1.0d, LineHeight) + 0.2d), MidpointRounding.AwayFromZero));
+        _metrics = ComputeMetrics();
     }
 
     protected void RenderGrid(DrawingContext context, GridState grid, bool drawShadow)
@@ -257,34 +250,16 @@ public abstract class EditorLayerControl : Control
     }
 
     protected double GetGridTop(GridState grid)
-    {
-        var row = grid.RenderRow;
-        if (grid.Floating && (string.Equals(grid.FloatAnchor, "SW", StringComparison.OrdinalIgnoreCase) || string.Equals(grid.FloatAnchor, "SE", StringComparison.OrdinalIgnoreCase)))
-            row -= Math.Max(0, grid.Rows - 1);
-        return GetEditorTopInset() + (row * CellHeight);
-    }
+        => CreateLayoutSnapshot().GetGridTop(grid);
 
     protected double GetGridLeft(GridState grid)
-    {
-        var col = grid.RenderCol;
-        if (grid.Floating && (string.Equals(grid.FloatAnchor, "NE", StringComparison.OrdinalIgnoreCase) || string.Equals(grid.FloatAnchor, "SE", StringComparison.OrdinalIgnoreCase)))
-            col -= Math.Max(0, grid.Cols - 1);
-        var left = col * CellWidth;
-        if (grid.Floating)
-            left = Math.Clamp(left, 0, Math.Max(0, Bounds.Width - (grid.Cols * CellWidth)));
-        return left;
-    }
+        => CreateLayoutSnapshot().GetGridLeft(grid);
 
     protected Rect GetGridRect(GridState grid)
-        => new(GetGridLeft(grid), GetGridTop(grid), grid.Cols * CellWidth, grid.Rows * CellHeight);
+        => CreateLayoutSnapshot().GetGridRect(grid);
 
     protected Rect BottomOverlayRect(int heightInRows, int offsetRows)
-    {
-        var height = Math.Max(1, heightInRows * CellHeight);
-        var baseTop = GetBottomOverlayRowTop();
-        var y = Math.Max(GetEditorTopInset(), baseTop - (offsetRows * CellHeight) - ((heightInRows - 1) * CellHeight));
-        return new Rect(0, y, Bounds.Width, height);
-    }
+        => CreateLayoutSnapshot().BottomOverlayRect(heightInRows, offsetRows);
 
     protected Rect? GetCmdlineRect()
     {
@@ -297,7 +272,10 @@ public abstract class EditorLayerControl : Control
 
     protected int GetCmdlineRowCount() => Model?.ActiveCmdline is not null ? 1 : 0;
 
-    protected int GetCmdlineBlockRowCount() => Model?.CmdlineBlock.Count ?? 0;
+    protected IReadOnlyList<string> GetVisibleCmdlineBlockLines()
+        => Model?.CmdlineBlock.Where(line => !string.IsNullOrWhiteSpace(line)).ToArray() ?? Array.Empty<string>();
+
+    protected int GetCmdlineBlockRowCount() => GetVisibleCmdlineBlockLines().Count;
 
     protected int GetOverlayBottomInsetRows() => GetCmdlineRowCount() + GetCmdlineBlockRowCount();
 
@@ -320,9 +298,21 @@ public abstract class EditorLayerControl : Control
         if (primaryGrid is null)
             return fallback;
 
-        var candidate = GetGridRect(primaryGrid).Bottom;
+        var row = primaryGrid.RenderRow;
+        if (primaryGrid.Floating && (string.Equals(primaryGrid.FloatAnchor, "SW", StringComparison.OrdinalIgnoreCase) || string.Equals(primaryGrid.FloatAnchor, "SE", StringComparison.OrdinalIgnoreCase)))
+            row -= Math.Max(0, primaryGrid.Rows - 1);
+        var candidate = GetEditorTopInset() + ((row + primaryGrid.Rows) * CellHeight);
         return Math.Clamp(candidate, GetEditorTopInset(), fallback);
     }
+
+    protected EditorLayoutSnapshot CreateLayoutSnapshot()
+        => new(
+            CellWidth,
+            CellHeight,
+            GetEditorTopInset(),
+            GetBottomOverlayRowTop(),
+            Bounds.Width,
+            Bounds.Height);
 
     protected PopupMenuLayout CalculatePopupMenuLayout(PopupMenuState popup, Rect? cmdlineRect, int previousFirstIndex, int previousLastSelectedIndex)
     {
@@ -514,16 +504,16 @@ public abstract class EditorLayerControl : Control
 
     protected void DrawOverlayText(DrawingContext context, string text, Point point, IBrush brush, double opacity = 1, double xInset = 4)
     {
-        var formatted = CreateFormattedText(string.IsNullOrEmpty(text) ? " " : text, new Typeface(FontFamilyRef), brush);
-        var y = point.Y + Math.Round((CellHeight - formatted.Height) / 2);
+        var measurement = MeasureResolvedTextRuns(text, style: null);
+        var y = point.Y + Math.Round((CellHeight - measurement.height) / 2);
         if (opacity >= 1)
         {
-            context.DrawText(formatted, new Point(point.X + xInset, y));
+            DrawResolvedTextRuns(context, text, style: null, brush, new Point(point.X + xInset, y));
             return;
         }
 
         using (context.PushOpacity(opacity))
-            context.DrawText(formatted, new Point(point.X + xInset, y));
+            DrawResolvedTextRuns(context, text, style: null, brush, new Point(point.X + xInset, y));
     }
 
     protected void DrawOverlayTextClipped(DrawingContext context, string text, Rect rect, IBrush brush, double xOffset = 0, double xInset = 0, double opacity = 1)
@@ -531,17 +521,17 @@ public abstract class EditorLayerControl : Control
         if (rect.Width <= 0 || rect.Height <= 0 || string.IsNullOrEmpty(text))
             return;
 
-        var formatted = CreateFormattedText(text, new Typeface(FontFamilyRef), brush);
-        var y = rect.Y + Math.Round((CellHeight - formatted.Height) / 2);
+        var measurement = MeasureResolvedTextRuns(text, style: null);
+        var y = rect.Y + Math.Round((CellHeight - measurement.height) / 2);
 
         using (context.PushClip(rect))
         {
             if (opacity >= 1)
-                context.DrawText(formatted, new Point(rect.X + xInset + xOffset, y));
+                DrawResolvedTextRuns(context, text, style: null, brush, new Point(rect.X + xInset + xOffset, y));
             else
             {
                 using (context.PushOpacity(opacity))
-                    context.DrawText(formatted, new Point(rect.X + xInset + xOffset, y));
+                    DrawResolvedTextRuns(context, text, style: null, brush, new Point(rect.X + xInset + xOffset, y));
             }
         }
     }
@@ -551,20 +541,20 @@ public abstract class EditorLayerControl : Control
         if (rect.Width <= 0 || rect.Height <= 0 || string.IsNullOrEmpty(text))
             return;
 
-        var formatted = CreateFormattedText(text, new Typeface(FontFamilyRef), brush);
+        var measurement = MeasureResolvedTextRuns(text, style: null);
         var x = alignment == TextAlignment.Right
-            ? Math.Max(rect.X, rect.Right - formatted.Width)
+            ? Math.Max(rect.X, rect.Right - measurement.width)
             : rect.X;
-        var y = rect.Y + Math.Round((CellHeight - formatted.Height) / 2);
+        var y = rect.Y + Math.Round((CellHeight - measurement.height) / 2);
 
         using (context.PushClip(rect))
         {
             if (opacity >= 1)
-                context.DrawText(formatted, new Point(x, y));
+                DrawResolvedTextRuns(context, text, style: null, brush, new Point(x, y));
             else
             {
                 using (context.PushOpacity(opacity))
-                    context.DrawText(formatted, new Point(x, y));
+                    DrawResolvedTextRuns(context, text, style: null, brush, new Point(x, y));
             }
         }
     }
@@ -596,19 +586,18 @@ public abstract class EditorLayerControl : Control
 
                 var (fg, _, style) = GetStyle(chunk.HlId);
                 var brush = ToBrush(fg);
-                var formatted = CreateFormattedText(chunk.Text, style, brush);
-                var y = rect.Y + Math.Round((CellHeight - formatted.Height) / 2);
-                context.DrawText(formatted, new Point(x, y));
-                DrawCellDecorations(context, x, rect.Y, formatted.Width, fg, style);
-                x += formatted.Width;
+                var measurement = MeasureResolvedTextRuns(chunk.Text, style);
+                var y = rect.Y + Math.Round((CellHeight - measurement.height) / 2);
+                DrawResolvedTextRuns(context, chunk.Text, style, brush, new Point(x, y));
+                DrawCellDecorations(context, x, rect.Y, measurement.width, fg, style);
+                x += measurement.width;
             }
         }
     }
 
     protected double MeasureTextWidth(string text)
     {
-        var formatted = CreateFormattedText(string.IsNullOrEmpty(text) ? " " : text, new Typeface(FontFamilyRef), Brushes.White);
-        return formatted.Width;
+        return MeasureResolvedTextRuns(text, style: null).width;
     }
 
     protected IReadOnlyList<MessageEntry> WrapMessageEntry(MessageEntry entry, double maxWidth)
@@ -680,7 +669,7 @@ public abstract class EditorLayerControl : Control
             var y = rect.Y + Math.Round((CellHeight - codeText.Height) / 2);
             var codeRect = new Rect(rect.X + OverlayTextInset, rect.Y, codeText.Width + 4, rect.Height);
             context.FillRectangle(codeBg, codeRect);
-            context.DrawText(CreateFormattedText(attentionHeader, new Typeface(FontFamilyRef), codeBrush), new Point(codeRect.X + 2, y));
+            DrawResolvedTextRuns(context, attentionHeader, style: null, codeBrush, new Point(codeRect.X + 2, y));
             var rest = entry.Text.Substring(attentionHeader.Length);
             if (!string.IsNullOrEmpty(rest))
                 DrawOverlayText(context, rest, new Point(codeRect.Right + 2, rect.Y), ToBrush(Model?.DefaultForeground ?? "#d4d4d4"), xInset: 0);
@@ -709,15 +698,18 @@ public abstract class EditorLayerControl : Control
 
     protected void DrawCellForeground(DrawingContext context, double x, double y, string text, string foreground, HighlightStyle? style, double width)
     {
-        var formatted = CreateFormattedText(text, style, ToBrush(foreground));
-        var textX = width > (CellWidth * 1.5) && formatted.Width < width
-            ? x + Math.Floor((width - formatted.Width) / 2)
-            : x;
-        var clampedTextX = textX + formatted.Width > Bounds.Width - 1
-            ? Math.Max(0, Bounds.Width - formatted.Width - 2)
+        var brush = ToBrush(foreground);
+        var measurement = MeasureResolvedTextRuns(text, style);
+        // Terminal cells are positioned on a fixed grid. Centering wide glyphs
+        // inside a 2-cell span creates visible gaps and cursor drift for CJK input.
+        var textX = x;
+        var clampedTextX = textX + measurement.width > Bounds.Width - 1
+            ? Math.Max(0, Bounds.Width - measurement.width - 2)
             : textX;
-        var textY = y + Math.Round((CellHeight - formatted.Height) / 2);
-        context.DrawText(formatted, new Point(clampedTextX, textY));
+        var textY = y + Math.Round((CellHeight - measurement.height) / 2);
+        var clipRect = new Rect(x, y, Math.Max(1, width), CellHeight);
+        using (context.PushClip(clipRect))
+            DrawResolvedTextRuns(context, text, style, brush, new Point(clampedTextX, textY));
         DrawCellDecorations(context, x, y, width, foreground, style);
     }
 
@@ -820,6 +812,164 @@ public abstract class EditorLayerControl : Control
             FontSize,
             brush);
 
+    protected (double width, double height) MeasureResolvedTextRuns(string text, HighlightStyle? style)
+    {
+        var runs = ResolveTextRuns(string.IsNullOrEmpty(text) ? " " : text, style);
+        var width = 0d;
+        var height = 0d;
+        foreach (var run in runs)
+        {
+            var formatted = CreateFormattedText(run.Text, run.Typeface, Brushes.White);
+            width += formatted.Width;
+            height = Math.Max(height, formatted.Height);
+        }
+
+        return (width, Math.Max(1, height));
+    }
+
+    protected void DrawResolvedTextRuns(DrawingContext context, string text, HighlightStyle? style, IBrush brush, Point origin)
+    {
+        var runs = ResolveTextRuns(string.IsNullOrEmpty(text) ? " " : text, style);
+        var x = origin.X;
+        foreach (var run in runs)
+        {
+            var formatted = CreateFormattedText(run.Text, run.Typeface, brush);
+            context.DrawText(formatted, new Point(x, origin.Y));
+            x += formatted.Width;
+        }
+    }
+
+    private IReadOnlyList<ResolvedTextRun> ResolveTextRuns(string text, HighlightStyle? style)
+    {
+        var baseTypeface = GetTypeface(style);
+        var runs = new List<ResolvedTextRun>();
+        var currentTypeface = ResolveTypefaceForRune(text.EnumerateRunes().First(), baseTypeface);
+        var current = new StringBuilder();
+
+        foreach (var rune in text.EnumerateRunes())
+        {
+            var resolved = ResolveTypefaceForRune(rune, baseTypeface);
+            if (!SameTypeface(currentTypeface, resolved) && current.Length > 0)
+            {
+                runs.Add(new ResolvedTextRun(current.ToString(), currentTypeface));
+                current.Clear();
+                currentTypeface = resolved;
+            }
+            else if (current.Length == 0)
+            {
+                currentTypeface = resolved;
+            }
+
+            current.Append(rune.ToString());
+        }
+
+        if (current.Length > 0)
+            runs.Add(new ResolvedTextRun(current.ToString(), currentTypeface));
+
+        return runs;
+    }
+
+    protected string DescribeResolvedTextRuns(string text, HighlightStyle? style)
+    {
+        var runs = ResolveTextRuns(text, style);
+        return string.Join(
+            " | ",
+            runs.Select(run => $"{run.Typeface.FontFamily.Name}:{run.Text.Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal)}"));
+    }
+
+    private Typeface ResolveTypefaceForRune(Rune rune, Typeface baseTypeface)
+    {
+        var key = $"{baseTypeface.FontFamily.Name}|{baseTypeface.Style}|{baseTypeface.Weight}|{baseTypeface.Stretch}|{rune.Value}";
+        if (TypefaceMatchCache.TryGetValue(key, out var cached))
+            return cached;
+
+        // Nerd Font / Powerline glyphs usually live in Unicode private-use areas.
+        // Matching them per-character can incorrectly fall through to symbol fonts
+        // like OpenSymbol, so prefer the user-selected GUI font family chain first.
+        if (IsPrivateUseRune(rune))
+        {
+            TypefaceMatchCache[key] = baseTypeface;
+            return baseTypeface;
+        }
+
+        if (FontManager.Current.TryMatchCharacter(
+                rune.Value,
+                baseTypeface.Style,
+                baseTypeface.Weight,
+                baseTypeface.Stretch,
+                baseTypeface.FontFamily,
+                CultureInfo.InvariantCulture,
+                out var matched))
+        {
+            TypefaceMatchCache[key] = matched;
+            return matched;
+        }
+
+        TypefaceMatchCache[key] = baseTypeface;
+        return baseTypeface;
+    }
+
+    private static bool IsPrivateUseRune(Rune rune)
+        => (rune.Value >= 0xE000 && rune.Value <= 0xF8FF)
+           || (rune.Value >= 0xF0000 && rune.Value <= 0xFFFFD)
+           || (rune.Value >= 0x100000 && rune.Value <= 0x10FFFD);
+
+    private static bool SameTypeface(Typeface left, Typeface right)
+        => string.Equals(left.FontFamily.Name, right.FontFamily.Name, StringComparison.OrdinalIgnoreCase)
+           && left.Style == right.Style
+           && left.Weight == right.Weight
+           && left.Stretch == right.Stretch;
+
+    private EditorRenderMetrics ComputeMetrics()
+    {
+        if (UseFixedCellMetrics)
+        {
+            return new EditorRenderMetrics(
+                FontFamilyName,
+                FontSize,
+                LineHeight,
+                new FontFamily(FontFamilyName),
+                Math.Max(1, FixedCellWidth),
+                Math.Max(1, FixedCellHeight),
+                Math.Max(1, FixedCellWidth),
+                Math.Max(1, FixedCellWidth),
+                Math.Max(1, FixedCellHeight),
+                Math.Max(1, FixedCellHeight));
+        }
+
+        var cacheKey = $"{FontFamilyName}|{FontSize:F3}|{LineHeight:F3}";
+        if (MetricsCache.TryGetValue(cacheKey, out var cached))
+            return cached;
+
+        var fontFamily = new FontFamily(FontFamilyName);
+        var probeTypeface = new Typeface(fontFamily);
+        var narrowProbe = CreateFormattedText("0", probeTypeface, Brushes.White);
+        var asciiProbe = CreateFormattedText("abcdefghijklmnopqrstuvwxyz", probeTypeface, Brushes.White);
+        var wideProbe = CreateFormattedText("あ", probeTypeface, Brushes.White);
+        var narrowWidth = Math.Max(narrowProbe.Width, asciiProbe.Width / 26d);
+        var wideHalfWidth = wideProbe.Width / 2d;
+        var measuredTextHeight = Math.Max(narrowProbe.Height, asciiProbe.Height);
+        var cellWidth = Math.Max(1, Math.Round(Math.Max(narrowWidth, wideHalfWidth), 2));
+        var cellHeight = Math.Max(1, Math.Ceiling(measuredTextHeight * Math.Max(1.0d, LineHeight)));
+        var metrics = new EditorRenderMetrics(
+            FontFamilyName,
+            FontSize,
+            LineHeight,
+            fontFamily,
+            cellWidth,
+            cellHeight,
+            narrowWidth,
+            wideHalfWidth,
+            narrowProbe.Height,
+            wideProbe.Height);
+
+        MetricsCache[cacheKey] = metrics;
+        GuiLogger.Info(
+            GuiLogCategory.Render,
+            () => $"MeasureCell font={FontFamilyName} fontSize={FontSize:F1} lineHeight={LineHeight:F2} narrowWidth={narrowWidth:F2} wideHalfWidth={wideHalfWidth:F2} narrowHeight={narrowProbe.Height:F2} wideHeight={wideProbe.Height:F2} asciiCell={cellWidth:F2} wideGlyph={wideProbe.Width:F2} wideRatio={(wideProbe.Width / Math.Max(1, cellWidth)):F2} cellHeight={cellHeight:F2}");
+        return metrics;
+    }
+
     private string ApplyBlend(string background, HighlightStyle? style, string fallbackBackground)
     {
         if (style?.Blend is not > 0)
@@ -867,3 +1017,5 @@ public readonly record struct PopupMenuLayout(
     double ExtraWidth,
     double GapWidth,
     double ScrollbarWidth);
+
+internal readonly record struct ResolvedTextRun(string Text, Typeface Typeface);

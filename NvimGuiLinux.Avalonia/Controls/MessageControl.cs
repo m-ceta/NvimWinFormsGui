@@ -36,15 +36,20 @@ public sealed class MessageControl : EditorLayerControl
         if (Model is null)
             return;
 
-        MeasureCell();
-
         var activeEntries = Model.HistoryVisible ? Model.HistoryEntries : Model.MessageEntries;
         var hideTransientMessages = !Model.HistoryVisible
             && _hiddenTransientGeneration == Model.TransientMessageGeneration;
         var showStatusLine = Model.ActiveCmdline is null
+            && !Model.HasPrimaryGridBottomRowContent()
             && (!string.IsNullOrWhiteSpace(Model.ShowMode)
                 || !string.IsNullOrWhiteSpace(Model.ShowCommand)
                 || !string.IsNullOrWhiteSpace(Model.Ruler));
+        if (showStatusLine)
+        {
+            NvimGuiCommon.Diagnostics.GuiLogger.Debug(
+                NvimGuiCommon.Diagnostics.GuiLogCategory.Render,
+                () => $"MessageStatusLine mode={LogText(Model.ShowMode)} command={LogText(Model.ShowCommand)} ruler={LogText(Model.Ruler)}");
+        }
         var showMessageLinesDuringCmdline = Model.HistoryVisible || Model.MessageGridRow.HasValue || HasConfirmMessages(activeEntries);
         var visibleEntries = Model.ActiveCmdline is not null
             ? (showMessageLinesDuringCmdline && !hideTransientMessages ? activeEntries.ToArray() : Array.Empty<MessageEntry>())
@@ -69,9 +74,10 @@ public sealed class MessageControl : EditorLayerControl
         if (totalRows == 0)
             return;
 
+        var layout = CreateLayoutSnapshot();
         var rect = messageGridAnchored
-            ? new Rect(0, GetEditorTopInset() + (Model.MessageGridRow!.Value * CellHeight), Bounds.Width, wrappedLines.Length * CellHeight)
-            : BottomOverlayRect(totalRows, GetStatuslineOffsetRows() + GetOverlayBottomInsetRows());
+            ? new Rect(0, layout.EditorTopInset + (Model.MessageGridRow!.Value * CellHeight), Bounds.Width, wrappedLines.Length * CellHeight)
+            : layout.BottomOverlayRect(totalRows, GetStatuslineOffsetRows() + GetOverlayBottomInsetRows());
         NvimGuiCommon.Diagnostics.GuiLogger.Debug(NvimGuiCommon.Diagnostics.GuiLogCategory.Message, () => $"MessageLayer bounds=x={rect.X:F1},y={rect.Y:F1},w={rect.Width:F1},h={rect.Height:F1} lines={wrappedLines.Length}");
 
         for (var i = 0; i < wrappedLines.Length; i++)
@@ -111,19 +117,33 @@ public sealed class MessageControl : EditorLayerControl
 
         var gap = CellWidth;
         var paddedRect = new Rect(statusRect.X + OverlayTextInset, statusRect.Y, Math.Max(0, statusRect.Width - (OverlayTextInset * 2)), statusRect.Height);
-        var rightWidth = Math.Max(0, MeasureOverlayText(string.IsNullOrEmpty(Model.Ruler) ? " " : Model.Ruler).Width);
-        var leftAndMidWidth = Math.Max(0, paddedRect.Width - rightWidth - (string.IsNullOrWhiteSpace(Model.Ruler) ? 0 : gap));
-        var leftWidth = Math.Max(0, (leftAndMidWidth - gap) / 2);
-        var midWidth = Math.Max(0, leftAndMidWidth - leftWidth - gap);
+        var leftText = Model.ShowMode ?? string.Empty;
+        var middleText = Model.ShowCommand ?? string.Empty;
+        var rightText = Model.Ruler ?? string.Empty;
 
-        var leftRect = new Rect(paddedRect.X, paddedRect.Y, leftWidth, paddedRect.Height);
-        var midRect = new Rect(leftRect.Right + gap, paddedRect.Y, midWidth, paddedRect.Height);
-        var rightRect = new Rect(Math.Max(midRect.Right + gap, paddedRect.Right - rightWidth), paddedRect.Y, Math.Max(0, paddedRect.Right - Math.Max(midRect.Right + gap, paddedRect.Right - rightWidth)), paddedRect.Height);
+        var leftWidth = string.IsNullOrEmpty(leftText) ? 0 : MeasureTextWidth(leftText);
+        var rightWidth = string.IsNullOrEmpty(rightText) ? 0 : MeasureTextWidth(rightText);
 
-        DrawOverlayTextInRect(context, Model.ShowMode, leftRect, ToBrush(Model.DefaultForeground), TextAlignment.Left);
-        DrawOverlayTextInRect(context, Model.ShowCommand, midRect, ToBrush(Model.DefaultForeground), TextAlignment.Right);
-        DrawOverlayTextInRect(context, Model.Ruler, rightRect, ToBrush(Model.DefaultForeground), TextAlignment.Right);
+        var leftGap = string.IsNullOrEmpty(leftText) ? 0 : gap;
+        var rightGap = string.IsNullOrEmpty(rightText) ? 0 : gap;
+
+        var leftRect = new Rect(paddedRect.X, paddedRect.Y, Math.Min(paddedRect.Width, leftWidth), paddedRect.Height);
+        var rightRectX = Math.Max(leftRect.Right + leftGap, paddedRect.Right - rightWidth);
+        var rightRect = new Rect(rightRectX, paddedRect.Y, Math.Max(0, paddedRect.Right - rightRectX), paddedRect.Height);
+        var middleRectX = Math.Min(paddedRect.Right, leftRect.Right + leftGap);
+        var middleRectRight = Math.Max(middleRectX, rightRect.X - rightGap);
+        var midRect = new Rect(middleRectX, paddedRect.Y, Math.Max(0, middleRectRight - middleRectX), paddedRect.Height);
+
+        DrawOverlayTextInRect(context, leftText, leftRect, ToBrush(Model.DefaultForeground), TextAlignment.Left);
+        DrawOverlayTextInRect(context, middleText, midRect, ToBrush(Model.DefaultForeground), TextAlignment.Left);
+        DrawOverlayTextInRect(context, rightText, rightRect, ToBrush(Model.DefaultForeground), TextAlignment.Right);
     }
+
+    private static string LogText(string? text)
+        => (text ?? string.Empty)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal)
+            .Replace(" ", "<sp>", StringComparison.Ordinal);
 
     private void HandleModelChanged()
     {

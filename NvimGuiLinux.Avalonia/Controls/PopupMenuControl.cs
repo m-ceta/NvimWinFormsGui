@@ -22,11 +22,10 @@ public sealed class PopupMenuControl : EditorLayerControl
             return;
         }
 
-        MeasureCell();
-        var layout = CalculatePopupMenuLayout(popup, GetCmdlineRect(), _popupFirstIndex, _popupLastSelectedIndex);
-        NvimGuiCommon.Diagnostics.GuiLogger.Debug(NvimGuiCommon.Diagnostics.GuiLogCategory.PopupMenu, () => $"PopupMenuLayer bounds=x={layout.Rect.X:F1},y={layout.Rect.Y:F1},w={layout.Rect.Width:F1},h={layout.Rect.Height:F1} selected={popup.Selected} items={popup.Items.Count} grid={popup.Grid} row={popup.Row} col={popup.Col}");
-        DrawPopupMenu(context, popup, layout);
-        _popupFirstIndex = layout.FirstIndex;
+        var popupLayout = CalculatePopupMenuLayout(popup, GetCmdlineRect(), _popupFirstIndex, _popupLastSelectedIndex);
+        NvimGuiCommon.Diagnostics.GuiLogger.Debug(NvimGuiCommon.Diagnostics.GuiLogCategory.PopupMenu, () => $"PopupMenuLayer bounds=x={popupLayout.Rect.X:F1},y={popupLayout.Rect.Y:F1},w={popupLayout.Rect.Width:F1},h={popupLayout.Rect.Height:F1} selected={popup.Selected} items={popup.Items.Count} grid={popup.Grid} row={popup.Row} col={popup.Col}");
+        DrawPopupMenu(context, popup, popupLayout);
+        _popupFirstIndex = popupLayout.FirstIndex;
         _popupLastSelectedIndex = popup.Selected;
     }
 }

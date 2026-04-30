@@ -11,7 +11,6 @@ public sealed class FloatingGridControl : EditorLayerControl
         if (Model is null)
             return;
 
-        MeasureCell();
         foreach (var grid in Model.VisibleGrids.Where(g => g.Floating))
             RenderGrid(context, grid, drawShadow: true);
 

@@ -10,6 +10,19 @@ namespace NvimGuiCommon.Theme;
 
 public static class NvimFontProbe
 {
+    private static readonly string[] CjkMonospaceFallbacks =
+    [
+        "\"Sarasa Mono J\"",
+        "\"Noto Sans Mono CJK JP\"",
+        "\"BIZ UDGothic\"",
+        "\"MS Gothic\"",
+        "IPAGothic",
+        "\"VL Gothic\"",
+        "\"Noto Sans Mono\"",
+        "\"DejaVu Sans Mono\"",
+        "monospace"
+    ];
+
     // nvimCommand は "nvim" でOK（PATH解決は ExeResolver.ResolveOnPath を使う想定）
     public static async Task<(string familyCss, int size)?> TryGetFontAsync(string nvimCommand)
     {
@@ -50,8 +63,29 @@ public static class NvimFontProbe
         if (families.Length == 0) return null;
 
         // 末尾に monospace を保険で付ける（任意）
-        var css = string.Join(", ", families) + ", monospace";
+        var css = AppendFallbackFamilies(families);
         return (css, size);
+    }
+
+    private static string AppendFallbackFamilies(string[] familiesCss)
+    {
+        var ordered = new System.Collections.Generic.List<string>();
+        var seen = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        static void Add(System.Collections.Generic.List<string> orderedFamilies, System.Collections.Generic.HashSet<string> seenFamilies, string family)
+        {
+            if (string.IsNullOrWhiteSpace(family) || !seenFamilies.Add(family))
+                return;
+            orderedFamilies.Add(family);
+        }
+
+        foreach (var family in familiesCss)
+            Add(ordered, seen, family);
+
+        foreach (var family in CjkMonospaceFallbacks)
+            Add(ordered, seen, family);
+
+        return string.Join(", ", ordered);
     }
 
     private static (string[] familiesCss, int size) ParseGuiFontToCssFamilies(string guifont)

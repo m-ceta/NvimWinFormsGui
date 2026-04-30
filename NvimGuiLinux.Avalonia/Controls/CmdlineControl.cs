@@ -20,7 +20,6 @@ public sealed class CmdlineControl : EditorLayerControl
         if (Model is null)
             return;
 
-        MeasureCell();
         RenderCmdlineBlock(context);
         if (Model.ActiveCmdline is { } cmdline)
             RenderCmdline(context, cmdline);
@@ -89,9 +88,14 @@ public sealed class CmdlineControl : EditorLayerControl
             return;
 
         var maxVisibleLines = Math.Max(2, (int)Math.Floor((Bounds.Height * 0.4) / CellHeight));
-        var lines = Model.CmdlineBlock.TakeLast(Math.Max(1, maxVisibleLines)).ToArray();
+        var lines = GetVisibleCmdlineBlockLines()
+            .TakeLast(Math.Max(1, maxVisibleLines))
+            .ToArray();
+        if (lines.Length == 0)
+            return;
+
         var offsetRows = GetStatuslineOffsetRows() + (Model.ActiveCmdline is null ? 0 : 1);
-        var rect = BottomOverlayRect(lines.Length, offsetRows);
+        var rect = CreateLayoutSnapshot().BottomOverlayRect(lines.Length, offsetRows);
         context.FillRectangle(ToBrush(Model.DefaultBackground), rect);
         for (var i = 0; i < lines.Length; i++)
         {

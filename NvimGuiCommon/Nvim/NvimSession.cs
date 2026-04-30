@@ -85,6 +85,8 @@ public sealed class NvimSession : IDisposable
     {
         if (_rpc is null || string.IsNullOrEmpty(input)) return;
         var send = isTermcode ? input : input.Replace("<", "<LT>");
+        if (!isTermcode)
+            GuiLogger.Debug(GuiLogCategory.TextInput, () => $"NvimSession.InputAsync send={Sanitize(send)} raw={Sanitize(input)}");
         try { await _rpc.CallAsync("nvim_input", send); }
         catch (Exception ex) when (IsExpectedDisconnect(ex)) { }
     }
@@ -124,4 +126,9 @@ public sealed class NvimSession : IDisposable
 
     private static bool IsExpectedDisconnect(Exception ex)
         => ex is IOException or ObjectDisposedException or OperationCanceledException or TaskCanceledException;
+
+    private static string Sanitize(string value)
+        => value
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
 }
