@@ -65,6 +65,77 @@ public partial class MainWindow : Window
         });
     }
 
+    private IStorageProvider? ResolveStorageProvider()
+        => TopLevel.GetTopLevel(this)?.StorageProvider ?? StorageProvider;
+
+    private static async Task WaitForMenuCloseAsync()
+    {
+        await Dispatcher.UIThread.InvokeAsync(static () => { }, DispatcherPriority.Background);
+    }
+
+    private async Task<IReadOnlyList<IStorageFile>> OpenFilePickerAfterMenuCloseAsync(FilePickerOpenOptions options)
+    {
+        await WaitForMenuCloseAsync();
+        var provider = ResolveStorageProvider();
+        if (provider is null)
+        {
+            GuiLogger.Error(GuiLogCategory.MainMenu, () => "open file picker failed provider unavailable");
+            return Array.Empty<IStorageFile>();
+        }
+
+        try
+        {
+            return await provider.OpenFilePickerAsync(options);
+        }
+        catch (Exception ex)
+        {
+            GuiLogger.Error(GuiLogCategory.MainMenu, () => $"open file picker failed error={ex}");
+            return Array.Empty<IStorageFile>();
+        }
+    }
+
+    private async Task<IStorageFile?> SaveFilePickerAfterMenuCloseAsync(FilePickerSaveOptions options)
+    {
+        await WaitForMenuCloseAsync();
+        var provider = ResolveStorageProvider();
+        if (provider is null)
+        {
+            GuiLogger.Error(GuiLogCategory.MainMenu, () => "save file picker failed provider unavailable");
+            return null;
+        }
+
+        try
+        {
+            return await provider.SaveFilePickerAsync(options);
+        }
+        catch (Exception ex)
+        {
+            GuiLogger.Error(GuiLogCategory.MainMenu, () => $"save file picker failed error={ex}");
+            return null;
+        }
+    }
+
+    private async Task<IReadOnlyList<IStorageFolder>> OpenFolderPickerAfterMenuCloseAsync(FolderPickerOpenOptions options)
+    {
+        await WaitForMenuCloseAsync();
+        var provider = ResolveStorageProvider();
+        if (provider is null)
+        {
+            GuiLogger.Error(GuiLogCategory.MainMenu, () => "open folder picker failed provider unavailable");
+            return Array.Empty<IStorageFolder>();
+        }
+
+        try
+        {
+            return await provider.OpenFolderPickerAsync(options);
+        }
+        catch (Exception ex)
+        {
+            GuiLogger.Error(GuiLogCategory.MainMenu, () => $"open folder picker failed error={ex}");
+            return Array.Empty<IStorageFolder>();
+        }
+    }
+
     private void ApplyFolderTreeLayout()
     {
         if (DataContext is not MainWindowViewModel vm)
@@ -167,7 +238,7 @@ public partial class MainWindow : Window
         var targetPath = node?.FullPath ?? "<blank>";
         GuiLogger.Info(GuiLogCategory.ContextMenu, () => $"context menu opening target path={targetPath}");
 
-        menu.Items.Add(CreateContextMenuItem("ツリーの更新(&U)...", node is null || node.IsDirectory, async () => await ChangeTreeRootAsync(), "change root"));
+        menu.Items.Add(CreateContextMenuItem("ツリーの更新...", node is null || node.IsDirectory, async () => await ChangeTreeRootAsync(), "change root"));
         menu.Items.Add(new Separator());
         menu.Items.Add(CreateContextMenuItem("新しいタブで開く", node is not null, async () => await OpenContextNodeAsync(OpenMode.NewTab), node is null ? "blank target" : "open selected"));
         menu.Items.Add(CreateContextMenuItem("現在の画面で開く", node is not null, async () => await OpenContextNodeAsync(OpenMode.Current), node is null ? "blank target" : "open selected"));
@@ -206,7 +277,7 @@ public partial class MainWindow : Window
     private async void MenuOpen_OnClick(object? sender, RoutedEventArgs e)
     {
         GuiLogger.Info(GuiLogCategory.MainMenu, () => "command clicked header=開く");
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        var files = await OpenFilePickerAfterMenuCloseAsync(new FilePickerOpenOptions
         {
             Title = "開く",
             AllowMultiple = false
@@ -231,7 +302,7 @@ public partial class MainWindow : Window
         if (DataContext is not MainWindowViewModel vm)
             return;
 
-        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        var file = await SaveFilePickerAfterMenuCloseAsync(new FilePickerSaveOptions
         {
             Title = "名前を付けて保存"
         });
@@ -303,7 +374,7 @@ public partial class MainWindow : Window
         if (DataContext is not MainWindowViewModel vm)
             return;
 
-        var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+        var folders = await OpenFolderPickerAfterMenuCloseAsync(new FolderPickerOpenOptions
         {
             Title = "ツリーのルートフォルダを選択",
             AllowMultiple = false

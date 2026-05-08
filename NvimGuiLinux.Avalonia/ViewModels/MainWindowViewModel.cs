@@ -26,7 +26,7 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string statusText = "Ready";
     [ObservableProperty] private string fontFamilyName = DefaultEditorFontFamily;
     [ObservableProperty] private double fontSize = 14;
-    [ObservableProperty] private double lineHeight = 1.0;
+    [ObservableProperty] private double lineHeight = 1.1;
     [ObservableProperty] private bool useFixedCellMetrics = false;
     [ObservableProperty] private double fixedCellWidth = 8;
     [ObservableProperty] private double fixedCellHeight = 18;

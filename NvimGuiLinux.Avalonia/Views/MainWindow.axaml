@@ -10,22 +10,22 @@
         MinWidth="700"
         MinHeight="520"
         Background="#f3f3f3"
-        Title="Nvim Linux GUI">
+        Title="Neovim (UI attach)">
   <DockPanel Background="#f3f3f3">
     <Menu x:Name="MainMenuBar"
           DockPanel.Dock="Top"
           FontFamily="Noto Sans CJK JP, Noto Sans, sans-serif"
           Background="#f3f3f3"
           Foreground="#202020">
-      <MenuItem Header="ファイル(&amp;F)" SubmenuOpened="MainMenuItem_OnSubmenuOpened">
-        <MenuItem Header="開く(&amp;O)..." Click="MenuOpen_OnClick" />
-        <MenuItem Header="保存(&amp;S)" Click="MenuSave_OnClick" />
-        <MenuItem Header="名前を付けて保存(&amp;A)..." Click="MenuSaveAs_OnClick" />
-        <MenuItem Header="閉じる(&amp;C)" Click="MenuCloseBuffer_OnClick" />
+      <MenuItem Header="ファイル" SubmenuOpened="MainMenuItem_OnSubmenuOpened">
+        <MenuItem Header="開く..." Click="MenuOpen_OnClick" />
+        <MenuItem Header="保存" Click="MenuSave_OnClick" />
+        <MenuItem Header="名前を付けて保存..." Click="MenuSaveAs_OnClick" />
+        <MenuItem Header="閉じる" Click="MenuCloseBuffer_OnClick" />
         <Separator />
-        <MenuItem Header="終了(&amp;Q)" Click="MenuExit_OnClick" />
+        <MenuItem Header="終了" Click="MenuExit_OnClick" />
       </MenuItem>
-        <MenuItem Header="表示(&amp;V)" SubmenuOpened="MainMenuItem_OnSubmenuOpened">
+        <MenuItem Header="表示" SubmenuOpened="MainMenuItem_OnSubmenuOpened">
         <MenuItem Header="開き方">
           <MenuItem x:Name="OpenModeNewTabMenuItem" Header="新しいタブ" Click="OpenModeNewTab_OnClick" />
           <MenuItem x:Name="OpenModeCurrentMenuItem" Header="現在の画面" Click="OpenModeCurrent_OnClick" />
@@ -34,8 +34,8 @@
         </MenuItem>
         <Separator />
         <MenuItem Header="フォルダツリー" Click="ToggleFolderTree_OnClick" />
-        <MenuItem Header="ツリーの更新(&amp;U)..." Click="ChangeTreeRoot_OnClick" />
-        <MenuItem Header="ツリー再読み込み(&amp;R)" Click="ReloadTree_OnClick" />
+        <MenuItem Header="ツリーの更新..." Click="ChangeTreeRoot_OnClick" />
+        <MenuItem Header="ツリー再読み込み" Click="ReloadTree_OnClick" />
       </MenuItem>
     </Menu>
 

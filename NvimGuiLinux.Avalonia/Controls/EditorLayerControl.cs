@@ -285,24 +285,7 @@ public abstract class EditorLayerControl : Control
     protected double GetBottomOverlayRowTop()
     {
         var fallback = Math.Max(GetEditorTopInset(), Bounds.Height - CellHeight);
-        if (Model is null)
-            return fallback;
-
-        var primaryGrid = Model.VisibleGrids
-            .Where(g => !g.Floating && g.Visible)
-            .OrderByDescending(g => g.Id == 1)
-            .ThenByDescending(g => g.EffectiveZIndex)
-            .ThenByDescending(g => g.Id)
-            .FirstOrDefault();
-
-        if (primaryGrid is null)
-            return fallback;
-
-        var row = primaryGrid.RenderRow;
-        if (primaryGrid.Floating && (string.Equals(primaryGrid.FloatAnchor, "SW", StringComparison.OrdinalIgnoreCase) || string.Equals(primaryGrid.FloatAnchor, "SE", StringComparison.OrdinalIgnoreCase)))
-            row -= Math.Max(0, primaryGrid.Rows - 1);
-        var candidate = GetEditorTopInset() + ((row + primaryGrid.Rows) * CellHeight);
-        return Math.Clamp(candidate, GetEditorTopInset(), fallback);
+        return fallback;
     }
 
     protected EditorLayoutSnapshot CreateLayoutSnapshot()
@@ -698,8 +681,17 @@ public abstract class EditorLayerControl : Control
 
     protected void DrawCellForeground(DrawingContext context, double x, double y, string text, string foreground, HighlightStyle? style, double width)
     {
+        var renderStyle = style;
+        var measurement = MeasureResolvedTextRuns(text, renderStyle);
+        if (renderStyle is not null
+            && (renderStyle.Bold || renderStyle.Italic)
+            && measurement.width > width)
+        {
+            renderStyle = renderStyle with { Bold = false, Italic = false };
+            measurement = MeasureResolvedTextRuns(text, renderStyle);
+        }
+
         var brush = ToBrush(foreground);
-        var measurement = MeasureResolvedTextRuns(text, style);
         // Terminal cells are positioned on a fixed grid. Centering wide glyphs
         // inside a 2-cell span creates visible gaps and cursor drift for CJK input.
         var textX = x;
@@ -709,8 +701,8 @@ public abstract class EditorLayerControl : Control
         var textY = y + Math.Round((CellHeight - measurement.height) / 2);
         var clipRect = new Rect(x, y, Math.Max(1, width), CellHeight);
         using (context.PushClip(clipRect))
-            DrawResolvedTextRuns(context, text, style, brush, new Point(clampedTextX, textY));
-        DrawCellDecorations(context, x, y, width, foreground, style);
+            DrawResolvedTextRuns(context, text, renderStyle, brush, new Point(clampedTextX, textY));
+        DrawCellDecorations(context, x, y, width, foreground, renderStyle);
     }
 
     protected void DrawCellDecorations(DrawingContext context, double x, double y, double width, string foreground, HighlightStyle? style)

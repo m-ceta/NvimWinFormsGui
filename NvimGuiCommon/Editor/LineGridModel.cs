@@ -229,6 +229,37 @@ public sealed class LineGridModel
                     }
                     break;
 
+                case "win_viewport":
+                    foreach (var item in args)
+                    {
+                        var a = Normalize(item);
+                        var gridId = ToInt(a.ElementAtOrDefault(0));
+                        var g = GetGrid(gridId);
+                        g.Viewport = new WindowViewport(
+                            Topline: Math.Max(1, ToInt(a.ElementAtOrDefault(1))),
+                            Botline: Math.Max(1, ToInt(a.ElementAtOrDefault(2))),
+                            Curline: Math.Max(1, ToInt(a.ElementAtOrDefault(3))),
+                            Curcol: Math.Max(0, ToInt(a.ElementAtOrDefault(4))),
+                            LineCount: Math.Max(1, ToInt(a.ElementAtOrDefault(5))));
+                        GuiLogger.Debug(GuiLogCategory.FloatingGrid, () => $"win_viewport grid={gridId} topline={g.Viewport.Topline} botline={g.Viewport.Botline} curline={g.Viewport.Curline} curcol={g.Viewport.Curcol} linecount={g.Viewport.LineCount}");
+                    }
+                    break;
+
+                case "win_viewport_margins":
+                    foreach (var item in args)
+                    {
+                        var a = Normalize(item);
+                        var gridId = ToInt(a.ElementAtOrDefault(0));
+                        var g = GetGrid(gridId);
+                        g.ViewportMargins = new WindowViewportMargins(
+                            Top: Math.Max(0, ToInt(a.ElementAtOrDefault(1))),
+                            Bottom: Math.Max(0, ToInt(a.ElementAtOrDefault(2))),
+                            Left: Math.Max(0, ToInt(a.ElementAtOrDefault(3))),
+                            Right: Math.Max(0, ToInt(a.ElementAtOrDefault(4))));
+                        GuiLogger.Debug(GuiLogCategory.FloatingGrid, () => $"win_viewport_margins grid={gridId} top={g.ViewportMargins.Top} bottom={g.ViewportMargins.Bottom} left={g.ViewportMargins.Left} right={g.ViewportMargins.Right}");
+                    }
+                    break;
+
                 case "win_external_pos":
                 case "win_hide":
                 case "win_close":
@@ -523,6 +554,9 @@ public sealed class LineGridModel
         _messageEntries.Clear();
         MessageGridId = null;
         MessageGridRow = null;
+        ShowMode = string.Empty;
+        ShowCommand = string.Empty;
+        Ruler = string.Empty;
         _transientMessageGeneration++;
         GuiLogger.Debug(GuiLogCategory.Message, () => $"transient messages cleared generation={generation}");
         Changed?.Invoke();
@@ -995,5 +1029,14 @@ public sealed class GridState(int id)
     public int EffectiveZIndex => Floating ? 1000 + ZIndex : ZIndex;
     public bool Visible { get; set; }
     public bool Floating { get; set; }
+    public WindowViewport? Viewport { get; set; }
+    public WindowViewportMargins ViewportMargins { get; set; } = WindowViewportMargins.Empty;
     public GridCell[][] Cells { get; set; } = Array.Empty<GridCell[]>();
+}
+
+public sealed record WindowViewport(int Topline, int Botline, int Curline, int Curcol, int LineCount);
+
+public sealed record WindowViewportMargins(int Top, int Bottom, int Left, int Right)
+{
+    public static WindowViewportMargins Empty { get; } = new(0, 0, 0, 0);
 }

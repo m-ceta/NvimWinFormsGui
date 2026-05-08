@@ -12,12 +12,20 @@ namespace NvimGuiLinux.Avalonia.Controls;
 public sealed class LineGridControl : EditorLayerControl
 {
     private EditorController? _editor;
+    private LineGridModel? _boundModel;
     private CancellationTokenSource? _resizeCts;
     private bool _leftDown;
+    private bool _minimapDragActive;
+    private bool _minimapSnapshotInFlight;
+    private long _lastMinimapSnapshotTicks;
     private string _preeditText = string.Empty;
     private int? _preeditCursorOffset;
     private Rect _lastImeCursorRect;
     private bool _hasLastImeCursorRect;
+    private Rect _minimapRect;
+    private bool _hasMinimapRect;
+    private MinimapSnapshot? _minimapSnapshot;
+    private Action? _modelChangedHandler;
     private readonly List<TabHitTarget> _tabHitTargets = new();
     private readonly NvimTextInputMethodClient _textInputMethodClient;
 
@@ -48,8 +56,14 @@ public sealed class LineGridControl : EditorLayerControl
     public void Bind(EditorController editor, LineGridModel model)
     {
         _editor = editor;
+        if (_boundModel is not null && _modelChangedHandler is not null)
+            _boundModel.Changed -= _modelChangedHandler;
+        _boundModel = model;
+        _modelChangedHandler = () => _ = QueueMinimapSnapshotAsync();
+        _boundModel.Changed += _modelChangedHandler;
         base.Bind(model);
         ScheduleResize();
+        _ = QueueMinimapSnapshotAsync();
     }
 
     public Task ResizeNvimToBoundsAsync() => ResizeNvimAsync(CancellationToken.None);
@@ -76,6 +90,7 @@ public sealed class LineGridControl : EditorLayerControl
         if (Model.Grids.TryGetValue(Model.CursorGrid, out var cursorGrid) && cursorGrid.Visible && !cursorGrid.Floating)
             RenderCursorOnGrid(context, cursorGrid);
 
+        DrawMinimap(context);
         RenderPreedit(context);
         PublishImeCursorRectIfChanged();
     }
@@ -182,6 +197,15 @@ public sealed class LineGridControl : EditorLayerControl
             return;
         }
 
+        var minimapHit = HitTestMinimap(e.GetPosition(this));
+        if (minimapHit is not null && _editor is not null && e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        {
+            e.Handled = true;
+            _minimapDragActive = true;
+            await _editor.ScrollToMinimapLineAsync(minimapHit.Line, minimapHit.DisplayRow);
+            return;
+        }
+
         var point = e.GetCurrentPoint(this);
         if (point.Properties.IsLeftButtonPressed)
             _leftDown = true;
@@ -192,6 +216,12 @@ public sealed class LineGridControl : EditorLayerControl
     protected override async void OnPointerReleased(PointerReleasedEventArgs e)
     {
         base.OnPointerReleased(e);
+        if (_minimapDragActive)
+        {
+            _minimapDragActive = false;
+            e.Handled = true;
+            return;
+        }
         await SendMouseAsync(e, e.GetCurrentPoint(this).Properties);
         _leftDown = false;
     }
@@ -199,6 +229,17 @@ public sealed class LineGridControl : EditorLayerControl
     protected override async void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
+        if (_minimapDragActive && _editor is not null)
+        {
+            var minimapHit = HitTestMinimap(e.GetPosition(this));
+            if (minimapHit is not null)
+            {
+                e.Handled = true;
+                await _editor.ScrollToMinimapLineAsync(minimapHit.Line, minimapHit.DisplayRow);
+            }
+            return;
+        }
+
         if (!_leftDown || _editor is null)
             return;
 
@@ -280,6 +321,181 @@ public sealed class LineGridControl : EditorLayerControl
         return (1, 0, 0, default);
     }
 
+    private async Task QueueMinimapSnapshotAsync()
+    {
+        if (_editor is null || _minimapSnapshotInFlight)
+            return;
+
+        var nowTicks = Environment.TickCount64;
+        if (nowTicks - Interlocked.Read(ref _lastMinimapSnapshotTicks) < 120)
+            return;
+
+        _minimapSnapshotInFlight = true;
+        try
+        {
+            var snapshot = await _editor.BuildMinimapSnapshotAsync();
+            Interlocked.Exchange(ref _lastMinimapSnapshotTicks, Environment.TickCount64);
+            if (snapshot is not null)
+            {
+                _minimapSnapshot = snapshot;
+                Dispatcher.UIThread.Post(InvalidateVisual);
+            }
+        }
+        finally
+        {
+            _minimapSnapshotInFlight = false;
+        }
+    }
+
+    private void DrawMinimap(DrawingContext context)
+    {
+        var grid = GetActiveEditorGrid();
+        var snapshot = _minimapSnapshot;
+        if (Model is null || grid is null || grid.Viewport is null || snapshot is null)
+        {
+            _hasMinimapRect = false;
+            return;
+        }
+
+        var gridRect = GetGridRect(grid);
+        if (gridRect.Width <= 0 || gridRect.Height <= 0)
+        {
+            _hasMinimapRect = false;
+            return;
+        }
+
+        var visibleCols = Math.Max(1, grid.Cols);
+        var visibleRows = Math.Max(1, grid.Rows);
+        var miniWidth = Math.Max(36, Math.Min(64, Math.Round(Math.Max(48, gridRect.Width * 0.08))));
+        var miniHeight = Math.Max(48, gridRect.Height - 8);
+        var miniX = Math.Round(gridRect.Right - miniWidth - 4);
+        var miniY = Math.Round(gridRect.Y + 4);
+        _minimapRect = new Rect(miniX, miniY, miniWidth, miniHeight);
+        _hasMinimapRect = true;
+
+        var displayModel = BuildMinimapDisplayModel(snapshot);
+        var topDisplayLine = GetDisplayRowForLine(displayModel, snapshot.TopLine);
+        var bottomDisplayLine = snapshot.BottomLine >= displayModel.LineCount
+            ? displayModel.TotalDisplayRows
+            : Math.Min(displayModel.TotalDisplayRows, GetDisplayRowForLine(displayModel, snapshot.BottomLine + 1));
+        var cursorDisplayLine = GetDisplayRowForLine(displayModel, snapshot.CurrentLine);
+        var viewportHeight = Math.Max(1, bottomDisplayLine - topDisplayLine);
+        var totalDisplayRows = Math.Max(1, displayModel.TotalDisplayRows);
+
+        context.FillRectangle(ToBrush("#0c0e12"), _minimapRect);
+        context.DrawRectangle(null, new Pen(ToBrush("#29ffffff"), 1), _minimapRect);
+
+        var contentLeft = miniX + 3;
+        var contentWidth = Math.Max(8, miniWidth - 6);
+        for (var i = 0; i < displayModel.Lines.Count; i++)
+        {
+            var seg = displayModel.Lines[i];
+            if (seg.Start is null || seg.End is null)
+                continue;
+
+            var rowStart = displayModel.RowOffsets[i];
+            var rowsForLine = Math.Max(1, seg.Rows);
+            var y = miniY + Math.Floor((rowStart / (double)totalDisplayRows) * miniHeight);
+            var nextY = miniY + Math.Floor(((rowStart + rowsForLine) / (double)totalDisplayRows) * miniHeight);
+            var h = Math.Max(1, nextY - y);
+            var startX = contentLeft + Math.Floor((seg.Start.Value / (double)displayModel.MaxColumn) * contentWidth);
+            var endX = contentLeft + Math.Ceiling((seg.End.Value / (double)displayModel.MaxColumn) * contentWidth);
+            context.FillRectangle(ToBrush(seg.Color ?? "#47dce4ec"), new Rect(startX, y, Math.Max(1, endX - startX), h));
+        }
+
+        var viewportY = miniY + Math.Floor((topDisplayLine / (double)totalDisplayRows) * miniHeight);
+        var viewportH = Math.Max(6, Math.Ceiling((viewportHeight / (double)totalDisplayRows) * miniHeight));
+        var viewportRect = new Rect(miniX + 1, viewportY, Math.Max(1, miniWidth - 2), Math.Min(viewportH, miniHeight));
+        context.FillRectangle(ToBrush("#1fffffff"), viewportRect);
+        context.DrawRectangle(null, new Pen(ToBrush("#a6ffffff"), 1), viewportRect);
+
+        var cursorY = miniY + Math.Floor((cursorDisplayLine / (double)totalDisplayRows) * miniHeight);
+        context.FillRectangle(ToBrush("#f2ffd45c"), new Rect(miniX + 1, cursorY, Math.Max(1, miniWidth - 2), 2));
+    }
+
+    private GridState? GetActiveEditorGrid()
+    {
+        if (Model is null)
+            return null;
+
+        return Model.VisibleGrids
+            .Where(g => !g.Floating && g.Visible && g.Viewport is not null)
+            .OrderByDescending(g => g.EffectiveZIndex)
+            .ThenByDescending(g => g.Id)
+            .FirstOrDefault();
+    }
+
+    private MinimapHitTarget? HitTestMinimap(Point pos)
+    {
+        if (!_hasMinimapRect || !_minimapRect.Contains(pos) || _minimapSnapshot is null)
+            return null;
+
+        var model = BuildMinimapDisplayModel(_minimapSnapshot);
+        var ratio = Math.Clamp((pos.Y - _minimapRect.Y) / Math.Max(1, _minimapRect.Height), 0, 1);
+        var targetDisplayRow = Math.Max(0, Math.Min(model.TotalDisplayRows - 1, (int)Math.Floor(ratio * model.TotalDisplayRows)));
+        var target = FindLineAtDisplayRow(model, targetDisplayRow);
+        return new MinimapHitTarget(target.Line, targetDisplayRow);
+    }
+
+    private static MinimapDisplayModel BuildMinimapDisplayModel(MinimapSnapshot snapshot)
+    {
+        var lines = snapshot.Lines.ToList();
+        while (lines.Count < snapshot.LineCount)
+            lines.Add(new MinimapLineInfo(1, 0, null, null, null));
+
+        var rowOffsets = new int[lines.Count];
+        var totalDisplayRows = 0;
+        for (var i = 0; i < lines.Count; i++)
+        {
+            rowOffsets[i] = totalDisplayRows;
+            totalDisplayRows += Math.Max(1, lines[i].Rows);
+        }
+
+        return new MinimapDisplayModel(
+            Math.Max(1, snapshot.LineCount),
+            Math.Max(1, snapshot.MaxColumn),
+            Math.Max(1, totalDisplayRows),
+            lines,
+            rowOffsets);
+    }
+
+    private static int GetDisplayRowForLine(MinimapDisplayModel model, int lineNumber)
+    {
+        var lineIndex = Math.Max(0, Math.Min(model.Lines.Count - 1, lineNumber - 1));
+        return model.RowOffsets.Length == 0 ? 0 : Math.Max(0, model.RowOffsets[lineIndex]);
+    }
+
+    private static (int Line, int RowStart) FindLineAtDisplayRow(MinimapDisplayModel model, int displayRow)
+    {
+        if (model.Lines.Count == 0 || model.RowOffsets.Length == 0)
+            return (1, 0);
+
+        var target = Math.Max(0, Math.Min(model.TotalDisplayRows - 1, displayRow));
+        var low = 0;
+        var high = model.Lines.Count - 1;
+        while (low <= high)
+        {
+            var mid = (low + high) >> 1;
+            var start = model.RowOffsets[mid];
+            var end = start + Math.Max(1, model.Lines[mid].Rows);
+            if (target < start)
+            {
+                high = mid - 1;
+            }
+            else if (target >= end)
+            {
+                low = mid + 1;
+            }
+            else
+            {
+                return (mid + 1, start);
+            }
+        }
+
+        var last = model.Lines.Count - 1;
+        return (last + 1, model.RowOffsets[last]);
+    }
+
     private void ScheduleResize()
     {
         _resizeCts?.Cancel();
@@ -305,8 +521,6 @@ public sealed class LineGridControl : EditorLayerControl
             return;
 
         var cols = Math.Max(2, (int)Math.Floor(Bounds.Width / Math.Max(1, CellWidth)));
-        // ext_cmdline/statusline are drawn from Neovim grid state and overlay controls,
-        // so reserving an extra bottom row here creates a visible gap.
         var reservedBottomRows = 0;
         var rows = Math.Max(
             2,
@@ -395,7 +609,7 @@ public sealed class LineGridControl : EditorLayerControl
         var topInset = layout.EditorTopInset;
         var rect = new Rect(0, 0, Bounds.Width, Math.Max(1, topInset));
         context.FillRectangle(ToBrush(BlendColor(Model.DefaultBackground, "#ffffff", 0.06)), rect);
-        context.DrawLine(new Pen(ToBrush("#ffffff1f"), 1), rect.BottomLeft, rect.BottomRight);
+        context.DrawLine(new Pen(ToBrush("#1fffffff"), 1), rect.BottomLeft, rect.BottomRight);
 
         var x = 6d;
         foreach (var tab in Model.TablineState.Tabs)
@@ -406,7 +620,7 @@ public sealed class LineGridControl : EditorLayerControl
             var badgeText = MeasureOverlayText(badge);
             var labelText = MeasureOverlayText(label);
             var closeText = MeasureOverlayText("x");
-            var width = Math.Min(Bounds.Width - x - 6, badgeText.Width + labelText.Width + closeText.Width + 34);
+            var width = Math.Min(Bounds.Width - x - 6, Math.Max(CellWidth * 10, badgeText.Width + labelText.Width + closeText.Width + 40));
             if (width <= CellWidth)
                 break;
 
@@ -422,8 +636,13 @@ public sealed class LineGridControl : EditorLayerControl
             DrawOverlayText(context, badge, new Point(badgeRect.X + 4, tabRect.Y), ToBrush(Model.DefaultForeground), opacity: 0.85, xInset: 0);
 
             var labelPrefix = tab.Changed ? $"{label} +" : label;
-            DrawOverlayText(context, labelPrefix, new Point(badgeRect.Right + 8, tabRect.Y), ToBrush(Model.DefaultForeground), xInset: 0);
             var closeRect = new Rect(tabRect.Right - closeText.Width - 10, tabRect.Y, closeText.Width + 8, tabRect.Height);
+            var labelRect = new Rect(
+                badgeRect.Right + 8,
+                tabRect.Y,
+                Math.Max(0, closeRect.X - (badgeRect.Right + 14)),
+                tabRect.Height);
+            DrawOverlayTextClipped(context, labelPrefix, labelRect, ToBrush(Model.DefaultForeground), xInset: 0);
             DrawOverlayText(context, "x", new Point(closeRect.X + 2, tabRect.Y), ToBrush(Model.DefaultForeground), opacity: 0.7, xInset: 0);
             _tabHitTargets.Add(new TabHitTarget(tab.Index, false, tabRect));
             _tabHitTargets.Add(new TabHitTarget(tab.Index, true, closeRect));
@@ -798,6 +1017,13 @@ public sealed class LineGridControl : EditorLayerControl
     }
 
     private sealed record TabHitTarget(int Index, bool CloseButton, Rect Rect);
+    private sealed record MinimapDisplayModel(
+        int LineCount,
+        int MaxColumn,
+        int TotalDisplayRows,
+        IReadOnlyList<MinimapLineInfo> Lines,
+        int[] RowOffsets);
+    private sealed record MinimapHitTarget(int Line, int DisplayRow);
 
     private sealed class NvimTextInputMethodClient(LineGridControl owner) : TextInputMethodClient
     {

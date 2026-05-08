@@ -180,6 +180,7 @@ public sealed class MessageControl : EditorLayerControl
                 if (Model.TransientMessageGeneration != generation)
                     return;
 
+                Model.ClearTransientMessagesIfGeneration(generation);
                 _hiddenTransientGeneration = generation;
                 InvalidateVisual();
             }

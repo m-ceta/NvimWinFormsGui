@@ -119,6 +119,21 @@ public sealed class NvimSession : IDisposable
         }
     }
 
+    public async Task<object?> CallAsync(string method, params object?[] args)
+    {
+        if (_rpc is null || string.IsNullOrWhiteSpace(method))
+            return null;
+
+        try
+        {
+            return await _rpc.CallAsync(method, args);
+        }
+        catch (Exception ex) when (IsExpectedDisconnect(ex))
+        {
+            return null;
+        }
+    }
+
     public void Dispose()
     {
         try { _rpc?.Dispose(); } catch { }
