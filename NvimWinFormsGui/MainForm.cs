@@ -145,6 +145,8 @@ public sealed class MainForm : Form
     private readonly ConcurrentQueue<IReadOnlyList<object?>> _redrawQueue = new();
     private readonly System.Windows.Forms.Timer _redrawTimer = new() { Interval = 33 }; // ~30fps
     private volatile bool _redrawSerializeInFlight;
+    private volatile bool _minimapSnapshotInFlight;
+    private long _lastMinimapSnapshotTicks;
     private volatile bool _webReady;
     private volatile bool _firstRedrawSeen;
     private int _restoreScheduled;
@@ -389,6 +391,13 @@ public sealed class MainForm : Form
             case "command":
                 if (_nvim is null || string.IsNullOrEmpty(msg.data)) return;
                 await SafeCommandAsync(msg.data!);
+                return;
+
+            case "minimapScroll":
+                if (_uiRedrawDebugEnabled)
+                    AppendDebugLog($"[minimap] scroll_request line={msg.line} displayRow={msg.displayRow} nvim={(_nvim is not null ? "yes" : "no")}");
+                if (_nvim is null || msg.line <= 0) return;
+                await ScrollToMinimapLineAsync(msg.line, msg.displayRow);
                 return;
 
             case "pumBounds":
@@ -1084,10 +1093,185 @@ public sealed class MainForm : Form
 
             if (IsDisposed) return;
             try { _web.CoreWebView2.PostWebMessageAsString(payload); } catch { }
+            _ = QueueMinimapSnapshotAsync();
         }
         finally
         {
             _redrawSerializeInFlight = false;
+        }
+    }
+
+    private async Task ScrollToMinimapLineAsync(int line, int displayRow)
+    {
+        if (_nvim is null) return;
+
+        try
+        {
+            if (_uiRedrawDebugEnabled)
+                AppendDebugLog($"[minimap] scroll_exec line={line} displayRow={displayRow}");
+            await _nvim.CallAsync(
+                "nvim_exec_lua",
+                """
+                local argv = { ... }
+                local target_line = tonumber(argv[1])
+                local target_display_row = tonumber(argv[2])
+                if not target_line then
+                  return
+                end
+                local win = vim.api.nvim_get_current_win()
+                local buf = vim.api.nvim_win_get_buf(win)
+                local maxline = vim.api.nvim_buf_line_count(buf)
+                target_line = math.max(1, math.min(maxline, target_line))
+                vim.api.nvim_win_set_cursor(win, { target_line, 0 })
+                vim.cmd('normal! zz')
+                """,
+                new object?[] { line, displayRow });
+            if (_uiRedrawDebugEnabled)
+                AppendDebugLog($"[minimap] scroll_done line={line} displayRow={displayRow}");
+        }
+        catch (Exception ex)
+        {
+            if (_uiRedrawDebugEnabled)
+                AppendDebugLog($"[minimap] scroll_error {TruncateForLog(ex.ToString(), 240)}");
+        }
+    }
+
+    private async Task QueueMinimapSnapshotAsync()
+    {
+        if (_minimapSnapshotInFlight || _nvim is null || _web.CoreWebView2 is null) return;
+
+        var nowTicks = Environment.TickCount64;
+        if (nowTicks - Interlocked.Read(ref _lastMinimapSnapshotTicks) < 120) return;
+
+        _minimapSnapshotInFlight = true;
+        try
+        {
+            var payload = await BuildMinimapSnapshotPayloadAsync().ConfigureAwait(true);
+            Interlocked.Exchange(ref _lastMinimapSnapshotTicks, Environment.TickCount64);
+            if (!string.IsNullOrWhiteSpace(payload) && !IsDisposed && _web.CoreWebView2 is not null)
+            {
+                try { _web.CoreWebView2.PostWebMessageAsString(payload); } catch { }
+            }
+        }
+        finally
+        {
+            _minimapSnapshotInFlight = false;
+        }
+    }
+
+    private async Task<string?> BuildMinimapSnapshotPayloadAsync()
+    {
+        if (_nvim is null) return null;
+
+        try
+        {
+            var snapshotObj = await _nvim.CallAsync(
+                "nvim_exec_lua",
+                """
+                local win = vim.api.nvim_get_current_win()
+                local buf = vim.api.nvim_win_get_buf(win)
+                local line_count = vim.api.nvim_buf_line_count(buf)
+                local raw_lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+                local wrap = vim.wo[win].wrap
+                local info = vim.fn.getwininfo(win)[1] or {}
+                local textoff = tonumber(info.textoff) or 0
+                local text_width = math.max(1, vim.api.nvim_win_get_width(win) - textoff)
+
+                local function line_rows(text)
+                  if not wrap then
+                    return 1
+                  end
+                  local width = vim.fn.strdisplaywidth(text or "")
+                  return math.max(1, math.ceil(math.max(width, 1) / text_width))
+                end
+
+                local normal_hex = vim.fn.synIDattr(vim.fn.hlID('Normal'), 'fg#', 'gui')
+                if type(normal_hex) ~= 'string' or #normal_hex == 0 then
+                  normal_hex = '#c8d1dc'
+                end
+                local lines = {}
+                local max_column = 1
+                local total_display_rows = 0
+
+                for i, text in ipairs(raw_lines) do
+                  local line = {
+                    rows = line_rows(text),
+                    width = vim.fn.strdisplaywidth(text or ""),
+                    color = normal_hex,
+                  }
+
+                  local first = text:find('%S')
+                  if first then
+                    local prefix = text:sub(1, first - 1)
+                    local last_text = text:match('^.*%S') or text
+                    local start_col = vim.fn.strdisplaywidth(prefix)
+                    local end_col = vim.fn.strdisplaywidth(last_text)
+                    local syn = vim.fn.synID(i, first, true)
+                    local color = vim.fn.synIDattr(vim.fn.synIDtrans(syn), 'fg#', 'gui')
+
+                    line.start = start_col
+                    line["end"] = math.max(start_col + 1, end_col)
+                    line.color = (type(color) == 'string' and #color > 0) and color or normal_hex
+                    max_column = math.max(max_column, line["end"], line.width)
+                  else
+                    max_column = math.max(max_column, line.width)
+                  end
+
+                  total_display_rows = total_display_rows + line.rows
+                  lines[i] = line
+                end
+
+                return {
+                  lineCount = math.max(line_count, #lines, 1),
+                  maxColumn = max_column,
+                  totalDisplayRows = math.max(total_display_rows, 1),
+                  textWidth = text_width,
+                  lines = lines,
+                }
+                """,
+                Array.Empty<object?>()).ConfigureAwait(true);
+
+            var snapshot = NvimRpcClient.ToJsonable(snapshotObj);
+            if (_uiRedrawDebugEnabled)
+            {
+                if (snapshot is IDictionary<string, object?> mapForLog)
+                {
+                    var lineCountForLog = mapForLog.TryGetValue("lineCount", out var lc) ? Convert.ToString(lc, CultureInfo.InvariantCulture) : "?";
+                    var totalRowsForLog = mapForLog.TryGetValue("totalDisplayRows", out var tr) ? Convert.ToString(tr, CultureInfo.InvariantCulture) : "?";
+                    var linesForLog = mapForLog.TryGetValue("lines", out var ls) && ls is IList<object?> listForLog ? listForLog.Count.ToString(CultureInfo.InvariantCulture) : "?";
+                    AppendDebugLog($"[minimap] snapshot_ready lineCount={lineCountForLog} totalDisplayRows={totalRowsForLog} lines={linesForLog}");
+                }
+                else
+                {
+                    AppendDebugLog($"[minimap] snapshot_ready type={snapshot?.GetType().FullName ?? "null"}");
+                }
+            }
+            if (snapshot is IDictionary<string, object?> map)
+            {
+                var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["type"] = "minimapSnapshot"
+                };
+                foreach (var entry in map)
+                {
+                    payload[entry.Key] = entry.Value;
+                }
+                return JsonSerializer.Serialize(payload);
+            }
+
+            return JsonSerializer.Serialize(new
+            {
+                type = "minimapSnapshot",
+                snapshot
+            });
+        }
+        catch (Exception ex)
+        {
+            if (_uiRedrawDebugEnabled)
+            {
+                AppendDebugLog($"[minimap] snapshot_error {TruncateForLog(ex.ToString(), 240)}");
+            }
+            return null;
         }
     }
 
@@ -2118,6 +2302,8 @@ public sealed class MainForm : Form
         public int width { get; set; }
         public int height { get; set; }
         public int index { get; set; }
+        public int line { get; set; }
+        public int displayRow { get; set; }
         public double pumRow { get; set; }
         public double pumCol { get; set; }
     }

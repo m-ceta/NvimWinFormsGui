@@ -564,6 +564,8 @@
             let deferredPaintNeeded = false;
             const floatShadowEnabled = false;
             const uiHlGroups = new Map();
+            let minimapSnapshot = { lineCount: 0, maxColumn: 1, lines: [] };
+            let minimapRect = null;
 
             const grids = new Map(); // id -> { id, cols, rows, cells, dirtyRows, x, y, z, visible, floating }
 
@@ -605,6 +607,7 @@
                     screenRow: Number.NaN,
                     screenCol: Number.NaN,
                     relative: "editor",
+                    wraps: new Uint8Array(newRows),
                     viewport: null,
                     viewportMargins: { top: 0, bottom: 0, left: 0, right: 0 }
                 };
@@ -703,6 +706,7 @@
                                 cont: !!src.cont
                             };
                         }
+                        if (prev.wraps?.[r]) gs.wraps[r] = 1;
                     }
                     if (gs.dirtyRows) gs.dirtyRows.fill(1);
                     gs.x = prev.x || 0;
@@ -750,6 +754,7 @@
                         gs.cells[r][c].hl = 0;
                         gs.cells[r][c].cont = false;
                     }
+                    if (gs.wraps) gs.wraps[r] = 0;
                 }
                 markAllDirty(gridId);
             }
@@ -764,6 +769,221 @@
                         if (!!a.floating !== !!b.floating) return a.floating ? 1 : -1;
                         return (a.id || 0) - (b.id || 0);
                     });
+            }
+
+            function getActiveEditorGrid() {
+                const current = getGridState(cursor.grid || 1);
+                if (current && !current.floating && current.visible !== false && current.viewport) {
+                    return current;
+                }
+
+                let best = null;
+                for (const gs of grids.values()) {
+                    if (!gs || gs.floating || gs.visible === false || !gs.viewport) continue;
+                    if (!best || (gs.z || 0) >= (best.z || 0)) best = gs;
+                }
+                return best;
+            }
+
+            function getMinimapMetrics(gs) {
+                if (!gs) return null;
+                const visibleCols = Math.max(1, Math.min(gs.cols || 0, gs.outerCols || gs.cols || 0));
+                const visibleRows = Math.max(1, Math.min(gs.rows || 0, gs.outerRows || gs.rows || 0));
+                const gx = Math.round(gs.x || 0);
+                const gy = Math.round(gs.y || 0);
+                const gw = visibleCols * cellW;
+                const gh = visibleRows * cellH;
+                if (gw <= 0 || gh <= 0) return null;
+
+                const pad = 4;
+                const width = Math.max(36, Math.min(64, Math.round(Math.max(48, gw * 0.08))));
+                const height = Math.max(48, gh - (pad * 2));
+                const x = Math.round(gx + gw - width - pad);
+                const y = Math.round(gy + pad);
+                return { x, y, width, height, visibleCols, visibleRows };
+            }
+
+            function getMinimapDisplayModel(gs) {
+                const rawSnapshot = minimapSnapshot && typeof minimapSnapshot === "object" ? minimapSnapshot : {};
+                let rawLines = [];
+                if (Array.isArray(rawSnapshot.lines)) {
+                    rawLines = rawSnapshot.lines;
+                } else if (rawSnapshot.lines && typeof rawSnapshot.lines === "object") {
+                    rawLines = Object.keys(rawSnapshot.lines)
+                        .map((key) => Number(key))
+                        .filter((key) => Number.isFinite(key))
+                        .sort((a, b) => a - b)
+                        .map((key) => rawSnapshot.lines[String(key)]);
+                }
+                const lines = rawLines.map((line) => {
+                    const item = line && typeof line === "object" ? line : {};
+                    const rows = Math.max(1, Number(item.rows) || 1);
+                    const width = Math.max(0, Number(item.width) || 0);
+                    const hasStart = item.start !== null && item.start !== undefined;
+                    const hasEnd = item.end !== null && item.end !== undefined;
+                    const start = hasStart ? Math.max(0, Number(item.start) || 0) : null;
+                    const end = hasEnd ? Math.max(start ?? 0, Number(item.end) || 0) : null;
+                    const color = typeof item.color === "string" && item.color ? item.color : null;
+                    return { rows, width, start, end, color };
+                });
+
+                const lineCount = Math.max(1, Number(rawSnapshot.lineCount) || Number(gs?.viewport?.lineCount) || lines.length || 1);
+                while (lines.length < lineCount) {
+                    lines.push({ rows: 1, width: 0, start: null, end: null, color: null });
+                }
+
+                let totalDisplayRows = 0;
+                const rowOffsets = new Array(lines.length);
+                for (let i = 0; i < lines.length; i++) {
+                    rowOffsets[i] = totalDisplayRows;
+                    totalDisplayRows += Math.max(1, Number(lines[i]?.rows) || 1);
+                }
+
+                const maxColumn = Math.max(1, Number(rawSnapshot.maxColumn) || 1);
+                const textWidth = Math.max(1, Number(rawSnapshot.textWidth) || Number(gs?.cols) || 1);
+                return {
+                    lineCount,
+                    maxColumn,
+                    textWidth,
+                    lines,
+                    rowOffsets,
+                    totalDisplayRows: Math.max(1, Number(rawSnapshot.totalDisplayRows) || totalDisplayRows || lineCount)
+                };
+            }
+
+            function getDisplayRowForLine(model, lineNumber) {
+                const lineIndex = Math.max(0, Math.min((model?.lines?.length || 1) - 1, Math.floor((Number(lineNumber) || 1) - 1)));
+                if (!model || !Array.isArray(model.rowOffsets) || model.rowOffsets.length === 0) return 0;
+                return Math.max(0, Number(model.rowOffsets[lineIndex]) || 0);
+            }
+
+            function findLineAtDisplayRow(model, displayRow) {
+                const lines = Array.isArray(model?.lines) ? model.lines : [];
+                const offsets = Array.isArray(model?.rowOffsets) ? model.rowOffsets : [];
+                if (lines.length === 0 || offsets.length === 0) {
+                    return { line: 1, rowStart: 0, rowWithinLine: 0 };
+                }
+
+                const target = Math.max(0, Math.min(Math.max(0, (model.totalDisplayRows || 1) - 1), Math.floor(Number(displayRow) || 0)));
+                let low = 0;
+                let high = lines.length - 1;
+                while (low <= high) {
+                    const mid = (low + high) >> 1;
+                    const start = offsets[mid];
+                    const end = start + Math.max(1, Number(lines[mid]?.rows) || 1);
+                    if (target < start) {
+                        high = mid - 1;
+                    } else if (target >= end) {
+                        low = mid + 1;
+                    } else {
+                        return { line: mid + 1, rowStart: start, rowWithinLine: target - start };
+                    }
+                }
+
+                const last = lines.length - 1;
+                return { line: last + 1, rowStart: offsets[last], rowWithinLine: Math.max(0, target - offsets[last]) };
+            }
+
+            function hitTestMinimap(clientX, clientY) {
+                if (!minimapRect) return null;
+                const rect = cv.getBoundingClientRect();
+                const px = Math.max(0, clientX - rect.left);
+                const py = Math.max(0, clientY - rect.top);
+                if (px < minimapRect.left || px >= minimapRect.right || py < minimapRect.top || py >= minimapRect.bottom) {
+                    return null;
+                }
+
+                const gs = getActiveEditorGrid();
+                if (!gs) return null;
+
+                const model = getMinimapDisplayModel(gs);
+                const ratio = Math.max(0, Math.min(1, (py - minimapRect.top) / Math.max(1, minimapRect.height)));
+                const targetDisplayRow = Math.max(0, Math.min(model.totalDisplayRows - 1, Math.floor(ratio * model.totalDisplayRows)));
+                const target = findLineAtDisplayRow(model, targetDisplayRow);
+                if (uiDebugEnabled) {
+                    post({ type: "debug", data: `[web] minimap_hit line=${target.line} displayRow=${targetDisplayRow} totalDisplayRows=${model.totalDisplayRows}` });
+                }
+                return {
+                    minimap: true,
+                    line: target.line,
+                    displayRow: targetDisplayRow,
+                    left: minimapRect.left,
+                    top: minimapRect.top,
+                    width: minimapRect.width,
+                    height: minimapRect.height
+                };
+            }
+
+            function drawMinimap() {
+                const gs = getActiveEditorGrid();
+                if (!gs || !gs.viewport) {
+                    minimapRect = null;
+                    return;
+                }
+
+                const viewport = gs.viewport;
+                const metrics = getMinimapMetrics(gs);
+                if (!metrics) {
+                    minimapRect = null;
+                    return;
+                }
+
+                const { x: miniX, y: miniY, width: miniWidth, height: miniHeight } = metrics;
+                const displayModel = getMinimapDisplayModel(gs);
+                const topLine = Math.max(0, Number(viewport.topline) || 0);
+                const botLine = Math.max(topLine + 1, Number(viewport.botline) || topLine + 1);
+                const curLine = Math.max(topLine, Number(viewport.curline) || topLine);
+                const totalDisplayRows = Math.max(1, Number(displayModel.totalDisplayRows) || 1);
+                const topDisplayLine = getDisplayRowForLine(displayModel, topLine + 1);
+                const bottomDisplayLine = botLine >= displayModel.lineCount
+                    ? totalDisplayRows
+                    : Math.min(totalDisplayRows, getDisplayRowForLine(displayModel, botLine + 1));
+                const cursorDisplayLine = getDisplayRowForLine(displayModel, curLine + 1);
+                const viewportHeight = Math.max(1, bottomDisplayLine - topDisplayLine);
+                minimapRect = { left: miniX, top: miniY, right: miniX + miniWidth, bottom: miniY + miniHeight, width: miniWidth, height: miniHeight };
+
+                const trackBg = "rgba(12, 14, 18, 0.88)";
+                const trackBorder = "rgba(255, 255, 255, 0.16)";
+                const viewportFill = "rgba(180, 205, 255, 0.12)";
+                const viewportBorder = "rgba(180, 205, 255, 0.65)";
+                const cursorColor = "rgba(255, 212, 92, 0.95)";
+
+                ctx.save();
+                ctx.fillStyle = trackBg;
+                ctx.fillRect(miniX, miniY, miniWidth, miniHeight);
+                ctx.strokeStyle = trackBorder;
+                ctx.lineWidth = 1;
+                ctx.strokeRect(miniX + 0.5, miniY + 0.5, Math.max(0, miniWidth - 1), Math.max(0, miniHeight - 1));
+
+                const contentLeft = miniX + 3;
+                const contentWidth = Math.max(8, miniWidth - 6);
+                for (let i = 0; i < displayModel.lines.length; i++) {
+                    const seg = displayModel.lines[i] || {};
+                    if (!Number.isFinite(seg.start) || !Number.isFinite(seg.end)) continue;
+                    const start = Math.max(0, Number(seg.start) || 0);
+                    const end = Math.max(start + 1, Number(seg.end) || (start + 1));
+                    const rowStart = displayModel.rowOffsets[i] || 0;
+                    const rowsForLine = Math.max(1, Number(seg.rows) || 1);
+                    const y = miniY + Math.floor((rowStart / totalDisplayRows) * miniHeight);
+                    const nextY = miniY + Math.floor(((rowStart + rowsForLine) / totalDisplayRows) * miniHeight);
+                    const h = Math.max(1, nextY - y);
+                    const startX = contentLeft + Math.floor((start / displayModel.maxColumn) * contentWidth);
+                    const endX = contentLeft + Math.ceil((end / displayModel.maxColumn) * contentWidth);
+                    ctx.fillStyle = seg.color || "rgba(220, 228, 236, 0.28)";
+                    ctx.fillRect(startX, y, Math.max(1, endX - startX), h);
+                }
+
+                const viewportY = miniY + Math.floor((topDisplayLine / totalDisplayRows) * miniHeight);
+                const viewportH = Math.max(6, Math.ceil((viewportHeight / totalDisplayRows) * miniHeight));
+                ctx.fillStyle = viewportFill;
+                ctx.fillRect(miniX + 1, viewportY, miniWidth - 2, Math.min(viewportH, miniHeight));
+                ctx.strokeStyle = viewportBorder;
+                ctx.strokeRect(miniX + 1.5, viewportY + 0.5, Math.max(0, miniWidth - 3), Math.max(0, Math.min(viewportH, miniHeight) - 1));
+
+                const cursorY = miniY + Math.floor((cursorDisplayLine / totalDisplayRows) * miniHeight);
+                ctx.fillStyle = cursorColor;
+                ctx.fillRect(miniX + 1, cursorY, miniWidth - 2, 2);
+                ctx.restore();
             }
 
             function isOverlayManagedFloat(gs) {
@@ -1916,6 +2136,7 @@
                     }
                 }
 
+                drawMinimap();
                 syncImePosition();
 
                 if (!gotAnyRedraw) {
@@ -2055,9 +2276,15 @@
                 if (capturedTarget && typeof capturedTarget.grid === "number") {
                     return capturedTarget;
                 }
+                if (capturedTarget && capturedTarget.minimap) {
+                    return hitTestMinimap(e.clientX, e.clientY) || capturedTarget;
+                }
 
                 const popupHit = hitTestPopupmenu(e.clientX, e.clientY);
                 if (popupHit) return popupHit;
+
+                const minimapHit = hitTestMinimap(e.clientX, e.clientY);
+                if (minimapHit) return minimapHit;
 
                 const rect = cv.getBoundingClientRect();
                 const px = Math.max(0, e.clientX - rect.left);
@@ -2067,6 +2294,15 @@
 
             function postMouse(button, action, e, forcedTarget = null) {
                 const pos = hitTestMouseTarget(e, forcedTarget);
+                if (pos.minimap) {
+                    if (button === "left" && (action === "press" || action === "drag")) {
+                        if (uiDebugEnabled) {
+                            post({ type: "debug", data: `[web] minimap_scroll_post action=${action} line=${pos.line} displayRow=${pos.displayRow}` });
+                        }
+                        post({ type: "minimapScroll", line: pos.line, displayRow: pos.displayRow });
+                    }
+                    return pos;
+                }
                 if (pos.popupmenu && popupmenuState && typeof pos.itemIndex === "number" && action !== "drag") {
                     popupmenuState.selected = pos.itemIndex;
                     renderPopupmenu();
@@ -2263,11 +2499,13 @@
                                             const src = gs.cells[r + delta][c];
                                             gs.cells[r][c] = { ch: src.ch, hl: src.hl, cont: !!src.cont };
                                         }
+                                        if (left === 0 && right >= gs.cols && gs.wraps) gs.wraps[r] = gs.wraps[r + delta];
                                     }
                                     for (let r = bot - delta; r < bot; r++) {
                                         for (let c = left; c < right; c++) {
                                             gs.cells[r][c] = { ch: " ", hl: 0, cont: false };
                                         }
+                                        if (left === 0 && right >= gs.cols && gs.wraps) gs.wraps[r] = 0;
                                     }
                                 } else {
                                     const d = -delta;
@@ -2276,11 +2514,13 @@
                                             const src = gs.cells[r - d][c];
                                             gs.cells[r][c] = { ch: src.ch, hl: src.hl, cont: !!src.cont };
                                         }
+                                        if (left === 0 && right >= gs.cols && gs.wraps) gs.wraps[r] = gs.wraps[r - d];
                                     }
                                     for (let r = top; r < top + d; r++) {
                                         for (let c = left; c < right; c++) {
                                             gs.cells[r][c] = { ch: " ", hl: 0, cont: false };
                                         }
+                                        if (left === 0 && right >= gs.cols && gs.wraps) gs.wraps[r] = 0;
                                     }
                                 }
 
@@ -2301,11 +2541,13 @@
 
                                 const row = a[1];
                                 const colStart = a[2];
+                                const wraps = !!a[4];
                                 markDirtyRow(row, gridId);
 
                                 const cells = a[3];
                                 if (!Array.isArray(cells)) continue;
                                 if (row < 0 || row >= gs.rows) continue;
+                                if (gs.wraps) gs.wraps[row] = wraps ? 1 : 0;
                                 let cellCount = 0;
 
                                 let col = colStart;
@@ -3364,6 +3606,25 @@
 
                 if (msg.type === "config") {
                     setUiDebugEnabled(!!msg.uiDebugEnabled);
+                    return;
+                }
+
+                if (msg.type === "minimapSnapshot") {
+                    const payload = msg.snapshot && typeof msg.snapshot === "object"
+                        ? msg.snapshot
+                        : msg;
+                    minimapSnapshot = payload && typeof payload === "object"
+                        ? payload
+                        : { lineCount: 1, maxColumn: 1, totalDisplayRows: 1, textWidth: 1, lines: [] };
+                    if (uiDebugEnabled) {
+                        const lineInfo = Array.isArray(minimapSnapshot.lines)
+                            ? `lines=${minimapSnapshot.lines.length}`
+                            : (minimapSnapshot.lines && typeof minimapSnapshot.lines === "object"
+                                ? `lines=${Object.keys(minimapSnapshot.lines).length}`
+                                : "lines=0");
+                        post({ type: "debug", data: `[web] minimap_snapshot_recv lineCount=${Number(minimapSnapshot.lineCount) || 0} totalDisplayRows=${Number(minimapSnapshot.totalDisplayRows) || 0} ${lineInfo}` });
+                    }
+                    schedulePaint();
                     return;
                 }
 
