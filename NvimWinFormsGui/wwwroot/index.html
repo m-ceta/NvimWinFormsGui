@@ -341,7 +341,11 @@
             let suppressNextInputText = null;
             let mouseLeftDown = false;
             let activeMouseTarget = null;
+            let visualDragPending = false;
+            let visualDragStarted = false;
             let redrawKickTimer = 0;
+            let minimapEnabled = true;
+            let liveResizeSuspended = false;
 
             function showErr(msg) {
                 errEl.style.display = "block";
@@ -391,6 +395,23 @@
                 uiDebugEnabled = !!enabled;
                 if (uiDebugEnabled) {
                     console.debug("[nvim-ui] redraw debug enabled");
+                }
+            }
+
+            function setMinimapEnabled(enabled) {
+                minimapEnabled = !!enabled;
+                if (!minimapEnabled) {
+                    minimapRect = null;
+                }
+                schedulePaint();
+            }
+
+            function setLiveResizeSuspended(enabled) {
+                const next = !!enabled;
+                const changed = liveResizeSuspended !== next;
+                liveResizeSuspended = next;
+                if (!liveResizeSuspended && changed) {
+                    onResize();
                 }
             }
 
@@ -824,7 +845,16 @@
                     const start = hasStart ? Math.max(0, Number(item.start) || 0) : null;
                     const end = hasEnd ? Math.max(start ?? 0, Number(item.end) || 0) : null;
                     const color = typeof item.color === "string" && item.color ? item.color : null;
-                    return { rows, width, start, end, color };
+                    const segments = Array.isArray(item.segments)
+                        ? item.segments.map((seg) => {
+                            const s = seg && typeof seg === "object" ? seg : {};
+                            const segStart = Math.max(0, Number(s.start) || 0);
+                            const segEnd = Math.max(segStart + 1, Number(s.end) || Number(s["end"]) || segStart + 1);
+                            const segColor = typeof s.color === "string" && s.color ? s.color : color;
+                            return { start: segStart, end: segEnd, color: segColor };
+                        }).filter((seg) => seg.end > seg.start)
+                        : [];
+                    return { rows, width, start, end, color, segments };
                 });
 
                 const lineCount = Math.max(1, Number(rawSnapshot.lineCount) || Number(gs?.viewport?.lineCount) || lines.length || 1);
@@ -885,6 +915,7 @@
             }
 
             function hitTestMinimap(clientX, clientY) {
+                if (!minimapEnabled) return null;
                 if (!minimapRect) return null;
                 const rect = cv.getBoundingClientRect();
                 const px = Math.max(0, clientX - rect.left);
@@ -915,6 +946,10 @@
             }
 
             function drawMinimap() {
+                if (!minimapEnabled || isTerminalLikeMode(currentModeName)) {
+                    minimapRect = null;
+                    return;
+                }
                 const gs = getActiveEditorGrid();
                 if (!gs || !gs.viewport) {
                     minimapRect = null;
@@ -955,22 +990,26 @@
                 ctx.lineWidth = 1;
                 ctx.strokeRect(miniX + 0.5, miniY + 0.5, Math.max(0, miniWidth - 1), Math.max(0, miniHeight - 1));
 
-                const contentLeft = miniX + 3;
-                const contentWidth = Math.max(8, miniWidth - 6);
+                const contentLeft = miniX + 2;
+                const contentWidth = Math.max(10, miniWidth - 4);
                 for (let i = 0; i < displayModel.lines.length; i++) {
                     const seg = displayModel.lines[i] || {};
-                    if (!Number.isFinite(seg.start) || !Number.isFinite(seg.end)) continue;
-                    const start = Math.max(0, Number(seg.start) || 0);
-                    const end = Math.max(start + 1, Number(seg.end) || (start + 1));
                     const rowStart = displayModel.rowOffsets[i] || 0;
                     const rowsForLine = Math.max(1, Number(seg.rows) || 1);
                     const y = miniY + Math.floor((rowStart / totalDisplayRows) * miniHeight);
                     const nextY = miniY + Math.floor(((rowStart + rowsForLine) / totalDisplayRows) * miniHeight);
                     const h = Math.max(1, nextY - y);
-                    const startX = contentLeft + Math.floor((start / displayModel.maxColumn) * contentWidth);
-                    const endX = contentLeft + Math.ceil((end / displayModel.maxColumn) * contentWidth);
-                    ctx.fillStyle = seg.color || "rgba(220, 228, 236, 0.28)";
-                    ctx.fillRect(startX, y, Math.max(1, endX - startX), h);
+                    const segments = Array.isArray(seg.segments) && seg.segments.length > 0
+                        ? seg.segments
+                        : (Number.isFinite(seg.start) && Number.isFinite(seg.end)
+                            ? [{ start: Math.max(0, Number(seg.start) || 0), end: Math.max(1, Number(seg.end) || 1), color: seg.color }]
+                            : []);
+                    for (const piece of segments) {
+                        const startX = contentLeft + Math.floor((piece.start / displayModel.maxColumn) * contentWidth);
+                        const endX = contentLeft + Math.ceil((piece.end / displayModel.maxColumn) * contentWidth);
+                        ctx.fillStyle = piece.color || seg.color || "rgba(220, 228, 236, 0.32)";
+                        ctx.fillRect(startX, y, Math.max(1, endX - startX), h);
+                    }
                 }
 
                 const viewportY = miniY + Math.floor((topDisplayLine / totalDisplayRows) * miniHeight);
@@ -2273,9 +2312,6 @@
             }
 
             function hitTestMouseTarget(e, capturedTarget = null) {
-                if (capturedTarget && typeof capturedTarget.grid === "number") {
-                    return capturedTarget;
-                }
                 if (capturedTarget && capturedTarget.minimap) {
                     return hitTestMinimap(e.clientX, e.clientY) || capturedTarget;
                 }
@@ -2289,12 +2325,38 @@
                 const rect = cv.getBoundingClientRect();
                 const px = Math.max(0, e.clientX - rect.left);
                 const py = Math.max(0, e.clientY - rect.top);
-                return hitTestGridAtPixel(px, py);
+                const liveTarget = hitTestGridAtPixel(px, py);
+                if (capturedTarget && typeof capturedTarget.grid === "number") {
+                    if (liveTarget
+                        && !liveTarget.minimap
+                        && !liveTarget.popupmenu
+                        && liveTarget.grid === capturedTarget.grid) {
+                        return liveTarget;
+                    }
+                    return capturedTarget;
+                }
+                return liveTarget;
             }
 
             function postMouse(button, action, e, forcedTarget = null) {
                 const pos = hitTestMouseTarget(e, forcedTarget);
                 if (pos.minimap) {
+                    if (button === "wheel") {
+                        const gs = getActiveEditorGrid();
+                        if (gs) {
+                            const visibleRows = Math.max(1, Math.min(gs.rows || 1, gs.outerRows || gs.rows || 1));
+                            const visibleCols = Math.max(1, Math.min(gs.cols || 1, gs.outerCols || gs.cols || 1));
+                            post({
+                                type: "mouse",
+                                button,
+                                action,
+                                modifiers: getModifierString(e),
+                                grid: gs.id,
+                                row: Math.max(0, Math.floor(visibleRows / 2)),
+                                col: Math.max(0, Math.floor(visibleCols / 2))
+                            });
+                        }
+                    }
                     if (button === "left" && (action === "press" || action === "drag")) {
                         if (uiDebugEnabled) {
                             post({ type: "debug", data: `[web] minimap_scroll_post action=${action} line=${pos.line} displayRow=${pos.displayRow}` });
@@ -2317,6 +2379,31 @@
                     col: pos.col
                 });
                 return pos;
+            }
+
+            function canStartVisualDrag(target) {
+                return !!target
+                    && !target.minimap
+                    && !target.popupmenu
+                    && typeof target.grid === "number"
+                    && isNormalLikeMode(currentModeName);
+            }
+
+            function resetVisualDragState() {
+                visualDragPending = false;
+                visualDragStarted = false;
+            }
+
+            function beginVisualDragIfNeeded() {
+                if (!visualDragPending || visualDragStarted) return;
+                if (!canStartVisualDrag(activeMouseTarget)) {
+                    resetVisualDragState();
+                    return;
+                }
+
+                post({ type: "input", data: "v", termcode: false });
+                visualDragStarted = true;
+                visualDragPending = false;
             }
 
             function scheduleNvimRedraw() {
@@ -3377,10 +3464,14 @@
                 if (e.button === 0) {
                     mouseLeftDown = true;
                     activeMouseTarget = postMouse("left", "press", e);
+                    visualDragPending = canStartVisualDrag(activeMouseTarget);
+                    visualDragStarted = false;
                 } else if (e.button === 1) {
                     activeMouseTarget = postMouse("middle", "press", e);
+                    resetVisualDragState();
                 } else if (e.button === 2) {
                     activeMouseTarget = postMouse("right", "press", e);
+                    resetVisualDragState();
                 }
 
                 setTimeout(() => {
@@ -3406,6 +3497,7 @@
                     postMouse("right", "release", e, activeMouseTarget);
                 }
                 activeMouseTarget = null;
+                resetVisualDragState();
 
                 scheduleNvimRedraw();
                 e.preventDefault();
@@ -3413,6 +3505,7 @@
 
             root.addEventListener("pointermove", (e) => {
                 if (!mouseLeftDown) return;
+                beginVisualDragIfNeeded();
                 postMouse("left", "drag", e, activeMouseTarget);
                 scheduleNvimRedraw();
                 e.preventDefault();
@@ -3423,6 +3516,7 @@
                 mouseLeftDown = false;
                 postMouse("left", "release", e, activeMouseTarget);
                 activeMouseTarget = null;
+                resetVisualDragState();
                 scheduleNvimRedraw();
             }, { passive: true });
 
@@ -3509,6 +3603,8 @@
                 if (e.button === 0) {
                     mouseLeftDown = true;
                     activeMouseTarget = postMouse("left", "press", e);
+                    visualDragPending = false;
+                    visualDragStarted = false;
                 } else if (e.button === 1) {
                     activeMouseTarget = postMouse("middle", "press", e);
                 } else if (e.button === 2) {
@@ -3528,6 +3624,7 @@
                     postMouse("right", "release", e, activeMouseTarget);
                 }
                 activeMouseTarget = null;
+                resetVisualDragState();
                 scheduleNvimRedraw();
                 e.preventDefault();
                 e.stopPropagation();
@@ -3557,6 +3654,9 @@
             }, { passive: false });
 
             function onResize() {
+                if (liveResizeSuspended) {
+                    return;
+                }
                 updateMetrics();
                 const cr = calcColsRows();
                 if (cr.cols !== cols || cr.rows !== rows) {
@@ -3606,6 +3706,8 @@
 
                 if (msg.type === "config") {
                     setUiDebugEnabled(!!msg.uiDebugEnabled);
+                    setMinimapEnabled(msg.minimapEnabled !== false);
+                    setLiveResizeSuspended(!!msg.liveResizeSuspended);
                     return;
                 }
 

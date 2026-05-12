@@ -150,6 +150,11 @@ public sealed class MainForm : Form
     private volatile bool _webReady;
     private volatile bool _firstRedrawSeen;
     private int _restoreScheduled;
+    private bool _minimapEnabled = true;
+    private bool _liveResizeSuspended;
+
+    private const int WM_ENTERSIZEMOVE = 0x0231;
+    private const int WM_EXITSIZEMOVE = 0x0232;
 
     // Buffer state for Save/SaveAs
     private bool _currentBufferHasFile;
@@ -363,7 +368,7 @@ public sealed class MainForm : Form
                 {
                     _lastCols = msg.cols;
                     _lastRows = msg.rows;
-                    if (_uiAttached && _nvim is not null)
+                    if (_uiAttached && _nvim is not null && !_liveResizeSuspended)
                     {
                         try { await _nvim.CallAsync("nvim_ui_try_resize", (long)_lastCols, (long)_lastRows); }
                         catch { }
@@ -555,27 +560,7 @@ public sealed class MainForm : Form
                 || env.Equals("yes", StringComparison.OrdinalIgnoreCase);
         }
 
-        return Properties.Settings.Default.UiRedrawDebugEnabled;
-    }
-
-    private void SetUiRedrawDebugEnabled(bool enabled, bool persist)
-    {
-        _uiRedrawDebugEnabled = enabled;
-
-        if (persist)
-        {
-            try
-            {
-                Properties.Settings.Default.UiRedrawDebugEnabled = enabled;
-                Properties.Settings.Default.Save();
-            }
-            catch
-            {
-            }
-        }
-
-        AppendDebugLog($"[config] ui_redraw_debug={(enabled ? "on" : "off")}");
-        PostUiDebugConfigToWeb();
+        return false;
     }
 
     private void PostUiDebugConfigToWeb()
@@ -587,7 +572,9 @@ public sealed class MainForm : Form
             _web.CoreWebView2.PostWebMessageAsString(JsonSerializer.Serialize(new
             {
                 type = "config",
-                uiDebugEnabled = _uiRedrawDebugEnabled
+                uiDebugEnabled = _uiRedrawDebugEnabled,
+                minimapEnabled = _minimapEnabled,
+                liveResizeSuspended = _liveResizeSuspended
             }));
         }
         catch
@@ -1138,7 +1125,7 @@ public sealed class MainForm : Form
 
     private async Task QueueMinimapSnapshotAsync()
     {
-        if (_minimapSnapshotInFlight || _nvim is null || _web.CoreWebView2 is null) return;
+        if (!_minimapEnabled || _minimapSnapshotInFlight || _nvim is null || _web.CoreWebView2 is null) return;
 
         var nowTicks = Environment.TickCount64;
         if (nowTicks - Interlocked.Read(ref _lastMinimapSnapshotTicks) < 120) return;
@@ -1193,6 +1180,68 @@ public sealed class MainForm : Form
                 local max_column = 1
                 local total_display_rows = 0
 
+                local function collect_segments(lnum, text)
+                  local segments = {}
+                  local byte_index = 1
+                  local display_col = 0
+                  local active = nil
+
+                  local function flush_active()
+                    if not active then
+                      return
+                    end
+                    if active["end"] > active.start then
+                      segments[#segments + 1] = active
+                    end
+                    active = nil
+                  end
+
+                  while byte_index <= #text do
+                    local code = text:byte(byte_index)
+                    local char_len = 1
+                    if code >= 0xF0 then
+                      char_len = 4
+                    elseif code >= 0xE0 then
+                      char_len = 3
+                    elseif code >= 0xC0 then
+                      char_len = 2
+                    end
+
+                    local ch = text:sub(byte_index, byte_index + char_len - 1)
+                    local cell_width = math.max(1, vim.fn.strdisplaywidth(ch))
+                    local is_space = ch:match('%s') ~= nil
+                    local color = normal_hex
+                    if not is_space then
+                      local syn = vim.fn.synID(lnum, byte_index, true)
+                      local syn_color = vim.fn.synIDattr(vim.fn.synIDtrans(syn), 'fg#', 'gui')
+                      if type(syn_color) == 'string' and #syn_color > 0 then
+                        color = syn_color
+                      end
+                    end
+
+                    if is_space then
+                      flush_active()
+                    else
+                      if active and active.color == color and active["end"] == display_col then
+                        active["end"] = display_col + cell_width
+                      else
+                        flush_active()
+                        active = {
+                          start = display_col,
+                          ["end"] = display_col + cell_width,
+                          color = color,
+                        }
+                      end
+                    end
+
+                    display_col = display_col + cell_width
+                    byte_index = byte_index + char_len
+                  end
+
+                  flush_active()
+                  return segments
+                end
+
                 for i, text in ipairs(raw_lines) do
                   local line = {
                     rows = line_rows(text),
@@ -1208,11 +1257,16 @@ public sealed class MainForm : Form
                     local end_col = vim.fn.strdisplaywidth(last_text)
                     local syn = vim.fn.synID(i, first, true)
                     local color = vim.fn.synIDattr(vim.fn.synIDtrans(syn), 'fg#', 'gui')
+                    local segments = collect_segments(i, text)
 
                     line.start = start_col
                     line["end"] = math.max(start_col + 1, end_col)
                     line.color = (type(color) == 'string' and #color > 0) and color or normal_hex
+                    line.segments = segments
                     max_column = math.max(max_column, line["end"], line.width)
+                    for _, seg in ipairs(segments) do
+                      max_column = math.max(max_column, seg["end"] or 0)
+                    end
                   else
                     max_column = math.max(max_column, line.width)
                   end
@@ -1308,6 +1362,12 @@ public sealed class MainForm : Form
         var changeRoot = new ToolStripMenuItem("ツリーの更新(&U)...", null, (_, __) => ChangeTreeRootAndReload());
         var reload = new ToolStripMenuItem("ツリー再読み込み(&R)", null, (_, __) => ReloadTree())
         { ShortcutKeys = Keys.F5 };
+        var minimapToggle = new ToolStripMenuItem("Minimap 表示")
+        {
+            CheckOnClick = true,
+            Checked = _minimapEnabled
+        };
+        minimapToggle.CheckedChanged += (_, __) => SetMinimapEnabled(minimapToggle.Checked);
 
         var openModeMenu = new ToolStripMenuItem("開き方");
         openModeMenu.DropDownItems.Add(MakeOpenModeItem("新しいタブ", OpenMode.NewTab, Keys.Control | Keys.Enter));
@@ -1315,19 +1375,12 @@ public sealed class MainForm : Form
         openModeMenu.DropDownItems.Add(MakeOpenModeItem("垂直分割", OpenMode.VSplit, Keys.None));
         openModeMenu.DropDownItems.Add(MakeOpenModeItem("水平分割", OpenMode.Split, Keys.None));
 
-        var redrawDebugLog = new ToolStripMenuItem("UI redraw debug log")
-        {
-            CheckOnClick = true,
-            Checked = _uiRedrawDebugEnabled
-        };
-        redrawDebugLog.CheckedChanged += (_, __) => SetUiRedrawDebugEnabled(redrawDebugLog.Checked, persist: true);
-
         viewMenu.DropDownItems.Add(openModeMenu);
         viewMenu.DropDownItems.Add(new ToolStripSeparator());
         viewMenu.DropDownItems.Add(changeRoot);
         viewMenu.DropDownItems.Add(reload);
         viewMenu.DropDownItems.Add(new ToolStripSeparator());
-        viewMenu.DropDownItems.Add(redrawDebugLog);
+        viewMenu.DropDownItems.Add(minimapToggle);
 
         _menu.Items.Add(fileMenu);
         _menu.Items.Add(viewMenu);
@@ -1345,6 +1398,20 @@ public sealed class MainForm : Form
                 sib.Checked = (sib == item);
         };
         return item;
+    }
+
+    private void SetMinimapEnabled(bool enabled)
+    {
+        if (_minimapEnabled == enabled)
+            return;
+
+        _minimapEnabled = enabled;
+        PostUiDebugConfigToWeb();
+
+        if (_minimapEnabled)
+        {
+            _ = QueueMinimapSnapshotAsync();
+        }
     }
 
     private void MenuOpen()
@@ -2306,5 +2373,27 @@ public sealed class MainForm : Form
         public int displayRow { get; set; }
         public double pumRow { get; set; }
         public double pumCol { get; set; }
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+
+        switch (m.Msg)
+        {
+            case WM_ENTERSIZEMOVE:
+                if (_liveResizeSuspended)
+                    return;
+                _liveResizeSuspended = true;
+                PostUiDebugConfigToWeb();
+                break;
+
+            case WM_EXITSIZEMOVE:
+                if (!_liveResizeSuspended)
+                    return;
+                _liveResizeSuspended = false;
+                PostUiDebugConfigToWeb();
+                break;
+        }
     }
 }
